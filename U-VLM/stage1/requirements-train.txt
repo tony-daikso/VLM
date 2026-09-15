@@ -1,0 +1,13 @@
+# Stage 1 訓練專用的精簡環境。資料已經全部抽取完存成 .npy/.npz
+# （見 ../../HANDOFF.md），dataset.py/train.py/eval.py 不會重新下載或跑 3D 推論，
+# 所以不需要 TotalSegmentator/nibabel/huggingface_hub，適合搬到遠端訓練機器用。
+#
+# 用法：pip install -r U-VLM/stage1/requirements-train.txt
+# 有 NVIDIA GPU 的話，先照 https://pytorch.org/get-started/locally/ 選對應 CUDA 版本裝 torch，
+# 再補裝這份剩下的套件（把 torch/torchvision 兩行從這份檔案刪掉即可）。
+
+torch==2.14.0
+torchvision==0.29.0
+numpy==2.4.6
+pillow==12.3.0
+PyYAML==6.0.3

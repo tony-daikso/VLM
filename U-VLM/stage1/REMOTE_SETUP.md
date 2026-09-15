@@ -39,10 +39,11 @@ Stage 1 訓練**只需要**這些套件，不需要 `TotalSegmentator`/`nibabel`
 conda create -n VLM python=3.11 -y
 conda activate VLM
 
-pip install torch torchvision   # 有 NVIDIA GPU 的話，去 https://pytorch.org/get-started/locally/
-                                  # 選對應 CUDA 版本的安裝指令，例如：
-                                  # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install pyyaml pillow numpy
+# 有 NVIDIA GPU 的話，先去 https://pytorch.org/get-started/locally/ 選對應 CUDA 版本裝 torch/torchvision
+# （例如 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121），
+# 再把 requirements-train.txt 裡的 torch/torchvision 兩行刪掉後跑下面這行補裝剩下的套件；
+# 沒有另外處理 CUDA 版本的話，直接跑這行就好：
+pip install -r U-VLM/stage1/requirements-train.txt
 ```
 
 確認 GPU 抓得到：

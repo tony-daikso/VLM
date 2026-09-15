@@ -1,0 +1,20 @@
+# 完整環境（資料抽取 scripts/ + Stage 1 訓練 U-VLM/stage1/ 都涵蓋）。
+# 只跑遠端訓練、不需要重新抽取資料的話，用 requirements-train.txt 就夠了
+# （不需要 TotalSegmentator/nibabel/huggingface_hub，見 U-VLM/stage1/REMOTE_SETUP.md）。
+#
+# 安裝前務必在目標機器上重新建立環境（conda create / python3 -m venv），
+# 不要把 .venv 或 conda env 資料夾直接搬過去跨機器/跨使用者用——見 REMOTE_SETUP.md 第 4 節，
+# 上次這樣搬導致 numpy 編譯檔案的 code signature 失效、環境整個壞掉。
+
+torch==2.14.0
+torchvision==0.29.0
+numpy==2.4.6
+pandas==3.0.5
+pillow==12.3.0
+PyYAML==6.0.3
+
+# 資料抽取用（scripts/extract_dataset_rexgroundingct.py / extract_dataset_hipas.py /
+# extract_totalseg_organs.py）
+huggingface_hub==1.31.0
+nibabel==5.4.2
+TotalSegmentator==2.18.0
