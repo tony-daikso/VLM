@@ -31,7 +31,7 @@ model:
   decoder_channels: [256, 128, 64, 32, 16]
 
 train:
-  batch_size: 12
+  batch_size: 24
   epochs: 150
   early_stopping_patience: 20
   optimizer: adamw

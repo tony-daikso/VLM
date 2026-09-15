@@ -136,3 +136,48 @@ U-VLM/stage1/
 5. **HiPaS 的 spacing 差異**：✅ 第一版先不做 spacing 校正，直接以像素為單位 resize 對齊；之後若 vessel head 效果不理想再考慮加 resample。
 
 以上 5 點確認完畢，開始實作 `U-VLM/stage1/` 底下的 `config.yaml` / `dataset.py` / `model.py` / `losses.py` / `train.py` / `eval.py`。
+
+---
+
+## 9. 訓練結果（2026-09-15，遠端 NVIDIA L40S）
+
+環境搬遷、GPU 相容性問題（torch cu130 build 跟 driver CUDA 12.9 不合，改裝 cu126 build 解決）、
+batch size 調整（32 在 118 類 organ head 上 OOM，改成 24 才穩定跑）過程見
+[REMOTE_SETUP.md](REMOTE_SETUP.md)。
+
+**訓練在 epoch 118 觸發 early stopping**（連續 20 epoch 沒有超過 epoch 98 的最佳分數，總共跑了
+119 個 epoch）。Best checkpoint 存在 `checkpoints/best_encoder.pt`（給 Stage 2/3 用）跟
+`checkpoints/best_full.pt`（含三個 decoder，供這階段自己 eval 用）。
+
+### 9.1 綜合分數
+
+Best score（epoch 98）= **0.6076**（`(lesion_dice + organ_macro_dice + (artery_dice+vein_dice)/2) / 3`）
+
+### 9.2 各 head 的 val 表現（`eval.py --checkpoint checkpoints/best_full.pt`，445 CT-RATE + 37 HiPaS）
+
+| Head | Mean | Median | Min~Max |
+|---|---:|---:|---|
+| Lesion（binary） | 0.3255 | 0.2482 | 0.00 ~ 0.95 |
+| Vessel artery | 0.8565 | 0.8708 | 0.60 ~ 0.95 |
+| Vessel vein | 0.7698 | 0.7953 | 0.57 ~ 0.91 |
+| Organ macro（79 類實際出現於 val） | 0.6842 | — | liver/肺葉/aorta 均 >0.92，esophagus 較弱 0.73，heart/trachea 這次 val 抽樣沒出現 |
+
+**Lesion dice 是雙峰分布**（`checkpoints/eval_lesion_dice.csv`，n=445）：
+- 38.9%（173 筆）dice < 0.05，幾乎完全沒抓到
+- 36.4%（162 筆）dice ≥ 0.5
+- 17.5%（78 筆）dice ≥ 0.7
+
+肉眼看 QA overlay（`qa/` 資料夾，20 張）確認出這個雙峰的原因是**病灶大小/型態**，不是隨機雜訊：
+- 小型局部病灶（例：`qa/train_10008_a_2_ctrate.png`）預測位置跟大小都抓得不錯
+- 大範圍瀰漫性病灶（例：`qa/train_10061_a_2_ctrate.png`，覆蓋大半個肺葉）模型明顯低估範圍，
+  只抓到局部碎片，這是目前 lesion head 最大的弱點
+- Vessel（HiPaS）分割視覺上幾乎跟 GT 重合（例：`qa/004_hipas.png`），質化上支持 0.86/0.77 的
+  量化結果
+
+### 9.3 給 Stage 2 的結論
+
+Organ（118 類 macro 0.68）跟 vessel（0.77~0.86）的表現顯示 **encoder 學到的空間特徵是紮實的**；
+lesion head 偏弱看起來是「小病灶可以、大範圍瀰漫病灶低估」的系統性限制，比較像是 decoder 容量、
+loss 設計（dice+bce 對大面積前景的梯度行為）或病灶標註本身雜訊（見第 1.1 節 `category` 不是固定
+taxonomy 的限制）造成的，不是 encoder 本身沒學好。這個結論直接支持
+[STAGE2_PLAN.md](../stage2/STAGE2_PLAN.md) 的 encoder 微調策略決定（見該文件第 8 節）。
