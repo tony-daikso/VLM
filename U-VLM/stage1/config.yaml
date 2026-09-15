@@ -1,0 +1,53 @@
+# U-VLM Stage 1（2D）訓練設定
+# 對應 STAGE1_PLAN.md 第 8 節已拍板的 5 個決策：
+#   organ=118類全用 / vessel head 現在就一起訓 / encoder用ImageNet預訓練 / 512x512 / spacing不校正
+
+seed: 42
+
+data:
+  processed_rex_dir: data/processed_rex
+  processed_hipas_dir: data/processed_hipas
+  splits_path: U-VLM/stage1/splits.json
+  val_ratio: 0.15
+
+image:
+  resolution: 512
+  # 肺窗 windowing（跟 extract_dataset_rexgroundingct.py / extract_dataset_hipas.py 產生 PNG 用的一致）
+  window_level: -600
+  window_width: 1500
+
+organ:
+  num_classes: 118 # 117 個 TotalSegmentator 器官類別（id 1~117） + 背景（id 0）
+
+augmentation:
+  hflip_prob: 0.5
+  rotation_deg: 10
+  scale_jitter: 0.1 # ±10% random resize crop scale
+  intensity_jitter: 0.1 # 亮度/對比 ±10%
+
+model:
+  encoder_name: resnet34
+  encoder_pretrained: true # 已拍板：用 ImageNet 預訓練權重初始化（偏離論文從零訓練）
+  decoder_channels: [256, 128, 64, 32, 16]
+
+train:
+  batch_size: 12
+  epochs: 150
+  early_stopping_patience: 20
+  optimizer: adamw
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  lr_scheduler: cosine
+  num_workers: 4
+  # WeightedRandomSampler：CT-RATE(3042):HiPaS(250) ≈ 12:1，強制兩來源在一個 epoch 內出現次數大致相等
+  hipas_sample_weight_ratio: 1.0
+  checkpoint_dir: U-VLM/stage1/checkpoints
+  log_every_n_steps: 20
+
+loss:
+  dice_weight: 1.0
+  bce_or_ce_weight: 1.0
+
+eval:
+  qa_overlay_dir: U-VLM/stage1/qa
+  num_qa_overlays: 20

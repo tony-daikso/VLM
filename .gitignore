@@ -1,0 +1,21 @@
+# 資料集（太大，不進 git；資料怎麼重建/怎麼搬看 HANDOFF.md / U-VLM/stage1/REMOTE_SETUP.md）
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 虛擬環境（不能跨機器搬，見 U-VLM/stage1/REMOTE_SETUP.md 第 4 節）
+.venv/
+.venv_broken_dufangchen_backup/
+venv/
+env/
+
+# 訓練產出（checkpoint/log/QA overlay，太大且可重新產生，不進 git）
+U-VLM/stage1/checkpoints/
+U-VLM/stage1/qa/
+
+# macOS / 工具本地狀態
+.DS_Store
+.claude/
