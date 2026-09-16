@@ -1,0 +1,84 @@
+# U-VLM CXR Stage 2.5（PadChest-GR）lesion detection 訓練設定
+# 對應 STAGE2_5_PLAN.md 第 0 節已拍板的三個決策：26 類 label_group / 接 Stage 1 encoder /
+# 單尺度 anchor-free（f3, stride 16）
+
+seed: 42
+
+# 先指到縮小版 PadChest-GR-small（跟 Stage 1/2 一致，608 筆）；全量訓練時把這行改成
+# data/X-ray/PadChest-GR/processed 即可
+data:
+  processed_dir: data/X-ray/PadChest-GR-small/processed
+  encoder_checkpoint: U-VLM/X-ray/cxr/stage1/checkpoints/best_encoder.pt
+
+image:
+  resolution: 512
+  percentile_low: 0.5
+  percentile_high: 99.5
+
+feature_stride: 16 # f3 的 stride，決定 heatmap/size/offset target 的 32x32 網格大小
+
+# 26 類 label_group，順序固定＝label_groups.json 的順序（字母序），跟 Stage 2 完全一致
+labels:
+  - "NSG tube"
+  - "Normal"
+  - "Other Entities"
+  - "alveolar pattern"
+  - "aortic atheromatosis"
+  - "aortic elongation"
+  - "atelectasis"
+  - "bronchiectasis"
+  - "cardiomegaly"
+  - "central venous catheter"
+  - "electrical device"
+  - "endotracheal tube"
+  - "fracture"
+  - "goiter"
+  - "hemidiaphragm elevation"
+  - "hiatal hernia"
+  - "hyperinflated lung"
+  - "hypoexpansion"
+  - "interstitial pattern"
+  - "nodule"
+  - "osteopenia"
+  - "pleural effusion"
+  - "pleural thickening"
+  - "scoliosis"
+  - "vascular hilar enlargement"
+  - "vertebral degenerative changes"
+
+augmentation:
+  hflip_prob: 0.5
+  rotation_deg: 10
+  scale_jitter: 0.1
+  intensity_jitter: 0.1
+
+model:
+  encoder_name: resnet34
+  head_hidden_channels: 256
+
+loss:
+  focal_alpha: 2.0
+  focal_beta: 4.0
+  size_weight: 0.1
+  offset_weight: 1.0
+  gaussian_min_overlap: 0.7
+
+train:
+  batch_size: 64
+  epochs: 80
+  early_stopping_patience: 20
+  freeze_encoder_epochs: 10
+  optimizer: adamw
+  head_lr: 1.0e-3
+  encoder_lr: 1.0e-4
+  weight_decay: 1.0e-4
+  lr_scheduler: cosine
+  num_workers: 4
+  checkpoint_dir: U-VLM/X-ray/cxr/stage2_5/checkpoints
+  log_every_n_steps: 10
+
+eval:
+  iou_threshold: 0.3
+  topk: 100
+  qa_overlay_dir: U-VLM/X-ray/cxr/stage2_5/qa
+  num_qa_overlays: 20

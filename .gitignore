@@ -21,7 +21,11 @@ U-VLM/CT/stage3/checkpoints/
 U-VLM/X-ray/cxr/stage1/checkpoints/
 U-VLM/X-ray/cxr/stage1/qa/
 U-VLM/X-ray/cxr/stage2/checkpoints/
+U-VLM/X-ray/cxr/stage2/qa/
+U-VLM/X-ray/cxr/stage2_5/checkpoints/
+U-VLM/X-ray/cxr/stage2_5/qa/
 U-VLM/X-ray/cxr/stage3/checkpoints/
+U-VLM/**/train.log
 
 # macOS / 工具本地狀態
 .DS_Store

@@ -1,0 +1,74 @@
+# U-VLM CXR Stage 2（PadChest-GR）分類 head 訓練設定
+# 對應 STAGE2_PLAN.md 已拍板的設定：兩階段 fine-tune（前 10 epoch 凍結 encoder）/
+# pos_weight 上限 20 倍 / 分類 head 只用 f4 / batch_size 起跑值 64
+
+seed: 42
+
+# 先指到縮小版 PadChest-GR-small（跟 Stage 1 一致，608 筆）；全量訓練時把這行改成
+# data/X-ray/PadChest-GR/processed 即可，manifest schema / label 名稱兩邊完全一致
+data:
+  processed_dir: data/X-ray/PadChest-GR-small/processed
+  encoder_checkpoint: U-VLM/X-ray/cxr/stage1/checkpoints/best_encoder.pt
+
+image:
+  resolution: 512
+  # 跟 Stage 1 完全一致（16-bit PNG per-image 百分位 clip+stretch），才能直接吃 Stage 1
+  # encoder 權重，見 STAGE1_PLAN.md 第 3 節
+  percentile_low: 0.5
+  percentile_high: 99.5
+
+# 26 類 label_group，順序固定＝data/X-ray/PadChest-GR(-small)/processed/label_groups.json
+# 的順序（字母序），dataset.py/train.py/eval.py 都用這個順序組 26 維向量，不能改動順序
+labels:
+  - "NSG tube"
+  - "Normal"
+  - "Other Entities"
+  - "alveolar pattern"
+  - "aortic atheromatosis"
+  - "aortic elongation"
+  - "atelectasis"
+  - "bronchiectasis"
+  - "cardiomegaly"
+  - "central venous catheter"
+  - "electrical device"
+  - "endotracheal tube"
+  - "fracture"
+  - "goiter"
+  - "hemidiaphragm elevation"
+  - "hiatal hernia"
+  - "hyperinflated lung"
+  - "hypoexpansion"
+  - "interstitial pattern"
+  - "nodule"
+  - "osteopenia"
+  - "pleural effusion"
+  - "pleural thickening"
+  - "scoliosis"
+  - "vascular hilar enlargement"
+  - "vertebral degenerative changes"
+
+augmentation:
+  hflip_prob: 0.5
+  rotation_deg: 10
+  scale_jitter: 0.1
+  intensity_jitter: 0.1
+
+model:
+  encoder_name: resnet34
+  head_hidden_dim: 256
+  dropout: 0.3
+
+train:
+  batch_size: 64 # 起跑值，OOM 就退一級（見 STAGE2_PLAN.md 第 4/7 節）
+  epochs: 80
+  early_stopping_patience: 20
+  freeze_encoder_epochs: 10 # 前 N epoch 凍結 encoder 只訓練 head（linear probe），之後解凍一起微調
+  optimizer: adamw
+  head_lr: 1.0e-3
+  encoder_lr: 1.0e-4
+  weight_decay: 1.0e-4
+  lr_scheduler: cosine
+  num_workers: 4
+  pos_weight_cap: 20.0
+  checkpoint_dir: U-VLM/X-ray/cxr/stage2/checkpoints
+  log_every_n_steps: 10

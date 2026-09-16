@@ -83,16 +83,42 @@ U-VLM/cxr/stage3/
 
 ---
 
-## 5. 待確認事項（開始寫 train.py 前需要拍板）
+## 5. 待確認事項 → 已拍板（2026-09-16）
 
-1. **LM decoder 的具體 backbone**：目前只定了「量級跟 GPT-2 相近的現成 decoder-only 模型」，
-   還沒選定具體哪一個（例如直接用 GPT-2、或某個小型 medical/clinical 語言模型），需要先確認
-   授權/取得方式跟這台機器/遠端 GPU 的資源限制
-2. **Visual injection 的實際接法**：prefix tokens（把投影後的視覺特徵當成 LM input 序列最前面幾個
-   token）vs cross-attention（LM 每一層額外接一個 cross-attention 去 attend 視覺特徵）——論文用的是
-   後者（multi-layer 注入），但實作複雜度更高，需要先確認要不要一次做到位還是先用 prefix tokens 的
-   簡化版本起步
-3. **Tokenizer / vocabulary**：選定 LM backbone 後才能確認，跟第 1 點連動
-4. **是否需要處理報告長度差異**：normal study 的 report_text 很短（常常一句話），abnormal study
-   可能是好幾句——訓練時 batch 內長度差異大要怎麼處理（padding/截斷策略），等實際看過 report_text
-   長度分布統計後再決定
+1. **LM decoder backbone**：✅ **GPT-2 (124M)**，`transformers` 已裝（5.17.0），直接
+   `GPT2LMHeadModel.from_pretrained("gpt2")`，不從零訓練
+2. **Visual injection 接法**：✅ **Cross-attention，忠實於論文的 multi-layer 注入**。實測發現
+   `transformers` 的 GPT2 實作原生支援這個模式（`GPT2Config(add_cross_attention=True)`，配合
+   `GPT2Model.forward` 的 `encoder_hidden_states` 參數），不用手動改 GPT2Block 內部——載入
+   pretrained GPT-2 權重時，self-attention/MLP/embedding 都正常從 checkpoint 載入，新增的
+   12 層 `crossattention`/`ln_cross_attn`/`q_attn` 權重是隨機初始化（HF 的
+   load-report 會列出這些 MISSING key，預期行為，train.py 會把它們訓練起來）
+3. **Visual token 來源**：只用 f4（跟 Stage 2 分類 head 的選擇一致，512 channel, stride 32,
+   輸入 512×512 → 16×16=256 個 token），沒有用多尺度——256 個 cross-attention token 對 GPT-2
+   規模來說已經足夠，多尺度會讓每層 cross-attention 的 KV 長度暴增，先不做
+4. **Tokenizer / padding**：GPT2Tokenizer（BPE），沒有原生 pad token，沿用標準做法把
+   `pad_token = eos_token`；batch 內動態 padding 到當下 batch 最長序列，`labels` 在 padding
+   位置設 -100（CrossEntropyLoss 自動忽略）；`max_length=96`（PadChest-GR report_text 實測
+   median 9 字、p95 31 字、max 81 字，96 token 綽綽有餘，極端長的才會被截斷）
+5. **臨床有效性代理指標**：✅ 採用計畫裡的「簡單 keyword 比對」方案（不是把文字餵回 Stage 2 圖像
+   分類器——那個模型輸入是影像不是文字，兩者不相容）：檢查生成報告文字裡有沒有出現各
+   label_group 的名稱關鍵字，跟這個 study 真正的 `classification_labels` 比對，算 precision/
+   recall/F1，這只是粗略 proxy（有些 label_group 名稱不會逐字出現在自然語句裡），不是精確指標
+
+---
+
+## 6. 產出物 / 檔案規劃（實際落地，跟第 4 節一致，補上細節）
+
+```
+U-VLM/X-ray/cxr/stage3/
+├── config.yaml
+├── dataset.py         # manifest.jsonl -> image + tokenized report_text
+├── model.py            # Stage 2 fine-tuned ResNet34Encoder（凍結）+ f4 投影 + GPT-2(cross-attn)
+├── train.py              # teacher forcing 訓練
+├── eval.py                # BLEU/ROUGE + keyword 臨床 proxy 指標
+└── checkpoints/
+```
+
+Encoder 策略：v1 直接**凍結** Stage 2 fine-tuned 的 encoder（不像 Stage 2 有 freeze→unfreeze
+兩階段），理由是 Stage 3 的重點是驗證「視覺特徵能不能餵給 LM 生成合理報告」，先固定視覺端減少
+變數；如果生成品質不理想，再回頭考慮要不要解凍 encoder 一起微調。

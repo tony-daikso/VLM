@@ -31,7 +31,7 @@ model:
 train:
   batch_size: 16 # 小資料集/先跑通流程用的保守值，全量訓練時再依 GPU 實測往上調（見待確認事項）
   epochs: 100
-  early_stopping_patience: 20
+  early_stopping_patience: 100 # 使用者要求這次不 early stop，設成 >= epochs 讓它永遠不會觸發
   optimizer: adamw
   lr: 1.0e-3
   weight_decay: 1.0e-4

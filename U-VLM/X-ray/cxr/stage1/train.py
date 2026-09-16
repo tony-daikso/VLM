@@ -97,12 +97,15 @@ def main():
     print(f"train: {len(train_ds)} samples, val: {len(val_ds)} samples")
 
     train_cfg = config["train"]
+    persistent_workers = train_cfg["num_workers"] > 0
     train_loader = DataLoader(
         train_ds, batch_size=train_cfg["batch_size"], shuffle=True,
         num_workers=train_cfg["num_workers"], drop_last=len(train_ds) > train_cfg["batch_size"],
+        persistent_workers=persistent_workers,
     )
     val_loader = DataLoader(
-        val_ds, batch_size=train_cfg["batch_size"], shuffle=False, num_workers=train_cfg["num_workers"]
+        val_ds, batch_size=train_cfg["batch_size"], shuffle=False, num_workers=train_cfg["num_workers"],
+        persistent_workers=persistent_workers,
     )
 
     model = Stage1Model(config).to(device)
@@ -168,6 +171,14 @@ def main():
         with open(os.path.join(checkpoint_dir, "history.json"), "w") as f:
             json.dump(history, f, indent=2)
 
+        if score > best_score:
+            best_score = score
+            epochs_without_improvement = 0
+            is_new_best = True
+        else:
+            epochs_without_improvement += 1
+            is_new_best = False
+
         ckpt = {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
@@ -178,14 +189,11 @@ def main():
         }
         torch.save(ckpt, os.path.join(checkpoint_dir, "last.pt"))
 
-        if score > best_score:
-            best_score = score
-            epochs_without_improvement = 0
+        if is_new_best:
             torch.save(model.encoder_state_dict(), os.path.join(checkpoint_dir, "best_encoder.pt"))
             torch.save(ckpt, os.path.join(checkpoint_dir, "best_full.pt"))
             print(f"  -> new best score {best_score:.4f}, saved checkpoint")
         else:
-            epochs_without_improvement += 1
             if epochs_without_improvement >= train_cfg["early_stopping_patience"]:
                 print(
                     f"early stopping at epoch {epoch} "

@@ -82,6 +82,16 @@ class Stage1Dataset(Dataset):
         root_dir = os.path.abspath(os.path.join(script_dir, "..", "..", "..", ".."))
         self.data_dir = os.path.join(root_dir, config["data"]["processed_dir"])
 
+        # decode+percentile-normalize+resize 的結果跟 epoch 無關（augmentation 才是每個 epoch
+        # 不同的部分），但原本每個 epoch 都對同一張圖重算一次 -- 16-bit PNG decode + 原始解析度
+        # percentile 大約佔了每張圖 90% 以上的載入時間，是目前 GPU 大量閒置等資料的主因。這裡把
+        # 算好的結果 cache 到磁碟（用 resolution/percentile 參數命名，避免設定改了誤用舊 cache），
+        # 之後的 epoch（甚至重跑訓練）直接讀 cache，不用重算。
+        self.cache_dir = os.path.join(
+            self.data_dir, f"_cache_r{self.resolution}_p{self.pct_lo}_{self.pct_hi}"
+        )
+        os.makedirs(self.cache_dir, exist_ok=True)
+
         records = load_jsonl(os.path.join(self.data_dir, "manifest.jsonl"))
         self.rows = [r for r in records if r["split"] == split]
         if not self.rows:
@@ -108,12 +118,24 @@ class Stage1Dataset(Dataset):
         }
 
     def _load_image(self, row):
+        cache_path = os.path.join(self.cache_dir, f"{row['study_id']}.npy")
+        if os.path.exists(cache_path):
+            return np.load(cache_path)
+
         img_path = os.path.join(self.data_dir, row["image_relpath"])
         arr = np.array(Image.open(img_path))
         arr = percentile_normalize(arr, self.pct_lo, self.pct_hi)
         tensor = torch.from_numpy(arr)[None, None]  # (1,1,H,W)
         tensor = F.interpolate(tensor, size=(self.resolution, self.resolution), mode="bilinear", align_corners=False)
-        return tensor[0, 0].numpy()
+        resized = tensor[0, 0].numpy()
+
+        # 寫到 tmp 再 rename，避免另一個 worker process 讀到寫一半的檔案；同一筆樣本在同一個
+        # epoch 內只會被一個 worker 處理，不會有兩個 process 同時寫同一個 cache 檔的情況。
+        tmp_path = cache_path + f".tmp{os.getpid()}"
+        with open(tmp_path, "wb") as f:  # 用 file handle 存，np.save 才不會再幫 tmp_path 補一次 .npy
+            np.save(f, resized)
+        os.replace(tmp_path, cache_path)
+        return resized
 
     def _sample_augment_params(self):
         aug_cfg = self.config["augmentation"]

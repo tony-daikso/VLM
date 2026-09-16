@@ -1,0 +1,67 @@
+# U-VLM CXR Stage 3（PadChest-GR）report generation 訓練設定
+# 對應 STAGE3_PLAN.md 第 5 節已拍板的決策：GPT-2 (124M) / cross-attention multi-layer 注入 /
+# 只用 f4 當 256 個 visual token / encoder 凍結不微調
+
+seed: 42
+
+data:
+  processed_dir: data/X-ray/PadChest-GR-small/processed
+  encoder_checkpoint: U-VLM/X-ray/cxr/stage2/checkpoints/best_encoder.pt
+
+image:
+  resolution: 512
+  percentile_low: 0.5
+  percentile_high: 99.5
+
+# 26 類 label_group，只有 eval.py 的 keyword 臨床 proxy 指標會用到（不是訓練目標）
+labels:
+  - "NSG tube"
+  - "Normal"
+  - "Other Entities"
+  - "alveolar pattern"
+  - "aortic atheromatosis"
+  - "aortic elongation"
+  - "atelectasis"
+  - "bronchiectasis"
+  - "cardiomegaly"
+  - "central venous catheter"
+  - "electrical device"
+  - "endotracheal tube"
+  - "fracture"
+  - "goiter"
+  - "hemidiaphragm elevation"
+  - "hiatal hernia"
+  - "hyperinflated lung"
+  - "hypoexpansion"
+  - "interstitial pattern"
+  - "nodule"
+  - "osteopenia"
+  - "pleural effusion"
+  - "pleural thickening"
+  - "scoliosis"
+  - "vascular hilar enlargement"
+  - "vertebral degenerative changes"
+
+model:
+  encoder_name: resnet34
+  lm_name: gpt2
+  freeze_encoder: true
+
+text:
+  max_length: 96 # PadChest-GR report_text 實測 median 9 字/p95 31 字/max 81 字，見 STAGE3_PLAN.md 第 5 節
+
+train:
+  batch_size: 32
+  epochs: 40
+  early_stopping_patience: 10
+  optimizer: adamw
+  lr: 5.0e-5 # LM fine-tune 常用的小 lr
+  weight_decay: 0.01
+  lr_scheduler: cosine
+  num_workers: 4
+  checkpoint_dir: U-VLM/X-ray/cxr/stage3/checkpoints
+  log_every_n_steps: 10
+
+eval:
+  num_beams: 4
+  max_new_tokens: 96
