@@ -3,11 +3,11 @@
 
 seed: 42
 
-# 先指到縮小版 PadChest-GR-small（~5GB, 608 筆）確認整條 pipeline 跑得動；
-# 全量訓練時把這行改成 data/X-ray/PadChest-GR/processed 即可，其他都不用動
-# （manifest schema、label_groups.json 的 26 類索引兩邊完全一致）
+# 全量資料（4,555 筆，2026-09-16 解壓完成）。checkpoint/qa 輸出指到 /datadrive（不是本機
+# /root/Desktop），因為這台 server 隨時可能被關機，本機磁碟不保證留得住 -- /datadrive 是持久化的
+# 掛載點，訓練成果都要放在那裡（見使用者交代事項）
 data:
-  processed_dir: data/X-ray/PadChest-GR-small/processed
+  processed_dir: data/X-ray/PadChest-GR/processed
 
 image:
   resolution: 512
@@ -29,15 +29,15 @@ model:
   decoder_channels: [256, 128, 64, 32, 16]
 
 train:
-  batch_size: 16 # 小資料集/先跑通流程用的保守值，全量訓練時再依 GPU 實測往上調（見待確認事項）
+  batch_size: 64 # 全量資料在 L40S 上實測（batch16 只用了 8.3GB/46GB），往上調加快訓練
   epochs: 100
-  early_stopping_patience: 100 # 使用者要求這次不 early stop，設成 >= epochs 讓它永遠不會觸發
+  early_stopping_patience: 20 # 全量資料規模正常，恢復標準 early stopping（小子集那次是使用者要求的特例）
   optimizer: adamw
   lr: 1.0e-3
   weight_decay: 1.0e-4
   lr_scheduler: cosine
   num_workers: 4
-  checkpoint_dir: U-VLM/X-ray/cxr/stage1/checkpoints
+  checkpoint_dir: /datadrive/VLM/U-VLM/X-ray/cxr/stage1/checkpoints
   log_every_n_steps: 10
 
 loss:
@@ -45,5 +45,5 @@ loss:
   bce_weight: 1.0
 
 eval:
-  qa_overlay_dir: U-VLM/X-ray/cxr/stage1/qa
+  qa_overlay_dir: /datadrive/VLM/U-VLM/X-ray/cxr/stage1/qa
   num_qa_overlays: 20
