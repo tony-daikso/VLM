@@ -1,0 +1,18 @@
+# Stage 3 訓練專用環境，跟 U-VLM/stage2/requirements-train.txt 差別是拿掉 scikit-learn，
+# 換成 transformers（借 GPT-2 BPE tokenizer 詞表，decoder 權重仍從零訓練，見 STAGE3_PLAN.md 第 2.4 節）
+# 跟 sacrebleu（算 BLEU-mean）。
+#
+# 用法：先照這台機器的 GPU driver 支援的 CUDA 版本裝 torch/torchvision（例如 driver 只到
+# CUDA 12.9 就要裝 cu124 build，不要讓 pip 自動抓最新版——這裡踩過一次坑：直接
+# `pip install transformers sacrebleu` 會把 torch 一起升級成 cu130 build，跟 driver 對不上，
+# CUDA 直接掛掉。裝法：
+#   pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+# 再補裝這份剩下的套件（把 torch/torchvision 兩行從這份檔案刪掉即可）。
+
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+numpy==2.4.6
+pillow==12.3.0
+PyYAML==6.0.3
+transformers==5.17.0
+sacrebleu==2.6.0

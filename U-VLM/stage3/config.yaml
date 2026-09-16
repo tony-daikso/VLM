@@ -1,0 +1,47 @@
+# U-VLM Stage 3（2D）report generation 訓練設定
+# 對應 STAGE3_PLAN.md 的設計：encoder 全程凍結、decoder 從零訓練、
+# multi-layer visual injection（5 個 encoder stage 對應 5 層 decoder，reference stage r=N=f4，K=256）
+
+seed: 42
+
+data:
+  processed_rex_dir: data/processed_rex
+  splits_path: U-VLM/stage1/splits.json  # 沿用 Stage 1/2 的 ctrate split，不重新切
+  encoder_checkpoint: U-VLM/stage2/checkpoints/best_encoder.pt
+
+image:
+  resolution: 512
+  window_level: -600
+  window_width: 1500
+
+augmentation:
+  hflip_prob: 0.5
+  rotation_deg: 10
+  scale_jitter: 0.1
+  intensity_jitter: 0.1
+
+text:
+  tokenizer_name: gpt2  # 只借詞表，decoder 權重從零訓練，見 STAGE3_PLAN.md 第 2.4 節
+  instruction: "Generate a report from the CT image."
+  max_report_tokens: 512  # p95≈428、p99≈531（實測 data/processed_rex 全體分佈），見 STAGE3_PLAN.md 第 3 節
+
+model:
+  encoder_name: resnet34
+  vision_tokens: 256  # reference stage r=N=f4，16x16=256，見 STAGE3_PLAN.md 第 2.2 節
+  hidden_dim: 512
+  num_layers: 5  # 跟 5 個 encoder stage (f0..f4) 一一對應
+  num_heads: 8
+  ffn_dim: 2048
+  dropout: 0.1
+
+train:
+  batch_size: 32  # 實測 batch 32 只用 21.5GB/46GB，OOM 就退一級
+  epochs: 80
+  early_stopping_patience: 15
+  optimizer: adamw
+  decoder_lr: 2.0e-4  # 不沿用論文 2e-5，理由見 STAGE3_PLAN.md 第 2.4/5 節
+  weight_decay: 1.0e-4
+  lr_scheduler: cosine
+  num_workers: 4
+  checkpoint_dir: U-VLM/stage3/checkpoints
+  log_every_n_steps: 20

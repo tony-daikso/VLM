@@ -16,6 +16,7 @@ env/
 U-VLM/stage1/checkpoints/
 U-VLM/stage1/qa/
 U-VLM/stage2/checkpoints/
+U-VLM/stage3/checkpoints/
 
 # macOS / 工具本地狀態
 .DS_Store
