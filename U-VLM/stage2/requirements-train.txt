@@ -1,0 +1,13 @@
+# Stage 2 訓練專用的精簡環境，跟 U-VLM/stage1/requirements-train.txt 差別只有多了
+# scikit-learn（eval.py / train.py 算 AUROC/AUPRC 用）。
+#
+# 用法：pip install -r U-VLM/stage2/requirements-train.txt
+# 有 NVIDIA GPU 的話，先照 https://pytorch.org/get-started/locally/ 選對應 CUDA 版本裝 torch，
+# 再補裝這份剩下的套件（把 torch/torchvision 兩行從這份檔案刪掉即可）。
+
+torch==2.14.0
+torchvision==0.29.0
+numpy==2.4.6
+pillow==12.3.0
+PyYAML==6.0.3
+scikit-learn==1.9.1

@@ -1,4 +1,4 @@
-# 完整環境（資料抽取 scripts/ + Stage 1 訓練 U-VLM/stage1/ 都涵蓋）。
+# 完整環境（資料抽取 scripts/ + Stage 1/2 訓練 U-VLM/stage1/、U-VLM/stage2/ 都涵蓋）。
 # 只跑遠端訓練、不需要重新抽取資料的話，用 requirements-train.txt 就夠了
 # （不需要 TotalSegmentator/nibabel/huggingface_hub，見 U-VLM/stage1/REMOTE_SETUP.md）。
 #
@@ -12,6 +12,7 @@ numpy==2.4.6
 pandas==3.0.5
 pillow==12.3.0
 PyYAML==6.0.3
+scikit-learn==1.9.1  # Stage 2 eval.py / train.py 算 AUROC/AUPRC 用
 
 # 資料抽取用（scripts/extract_dataset_rexgroundingct.py / extract_dataset_hipas.py /
 # extract_totalseg_organs.py）

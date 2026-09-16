@@ -123,3 +123,88 @@ python3 U-VLM/stage1/train.py
 ```bash
 python3 U-VLM/stage1/eval.py --checkpoint U-VLM/stage1/checkpoints/best_full.pt
 ```
+
+---
+
+## 6. Stage 2 訓練（沿用同一台遠端機器）
+
+Stage 1 已經跑完（見 [STAGE1_PLAN.md 第 9 節](STAGE1_PLAN.md)），Stage 2 的程式碼（`U-VLM/stage2/`
+底下 `config.yaml`/`dataset.py`/`model.py`/`losses.py`/`train.py`/`eval.py`）也已經在本機寫完並
+跑過煙霧測試，還沒跑過正式訓練。因為輸入是 Stage 1 訓練出來的 encoder 權重，**Stage 2 只能接在
+Stage 1 已經跑完的同一台機器（或至少同一份 `data/processed_rex/` + `U-VLM/stage1/checkpoints/`）
+之後做**，不是獨立環境。
+
+### 6.1 額外需要搬過去的東西
+
+| 路徑 | 需不需要 |
+|---|---|
+| `U-VLM/stage2/` | ✅ 全部搬（`config.yaml`/`dataset.py`/`model.py`/`losses.py`/`train.py`/`eval.py`/`STAGE2_PLAN.md`） |
+| `data/processed_rex/` | 已經在遠端（Stage 1 用過），不用重搬 |
+| `data/processed_hipas/` | ❌ Stage 2 用不到（HiPaS 沒有 classification 標籤，見 STAGE2_PLAN.md 第 1 節），不用管 |
+| `U-VLM/stage1/checkpoints/best_encoder.pt` | ⚠️ **關鍵前置檔案**，Stage 2 `train.py` 開跑時會直接讀這個路徑載入 encoder 權重。先確認遠端這個檔案還在（`ls -la U-VLM/stage1/checkpoints/best_encoder.pt`），如果之前訓練完清過 checkpoints 資料夾，要把本機（或任何地方留存的一份）`best_encoder.pt` 重新傳回遠端 |
+
+### 6.2 額外需要裝的套件
+
+Stage 2 的 `eval.py`/`train.py` 用 `sklearn.metrics` 算 AUROC/AUPRC，Stage 1 原本的環境沒裝：
+```bash
+pip install scikit-learn==1.9.1
+# 或直接補裝整份 Stage 2 的 requirements（torch/torchvision 版本跟 Stage 1 一致，重複裝一次沒差）：
+pip install -r U-VLM/stage2/requirements-train.txt
+```
+
+### 6.3 快速驗證環境跟資料/權重都對得上
+
+```bash
+cd VLM
+python3 -c "
+import sys, torch, yaml
+sys.path.insert(0, 'U-VLM/stage2')
+from dataset import Stage2Dataset
+from model import Stage2Model
+
+with open('U-VLM/stage2/config.yaml') as f:
+    config = yaml.safe_load(f)
+
+train_ds = Stage2Dataset(config, 'train', augment=True)
+val_ds = Stage2Dataset(config, 'val', augment=False)
+print('train:', len(train_ds), 'val:', len(val_ds))  # 應該是 train 2597 / val 445
+
+model = Stage2Model(config)
+state = torch.load('U-VLM/stage1/checkpoints/best_encoder.pt', map_location='cpu')
+missing, unexpected = model.encoder.load_state_dict(state, strict=True)
+print('missing:', missing, 'unexpected:', unexpected)  # 兩個都應該是空 list，代表架構跟權重完全對得上
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = model.to(device)
+x = torch.randn(2, 1, 512, 512, device=device)
+out = model(x)
+print('logits shape:', out.shape)  # (2, 18)
+"
+```
+
+### 6.4 開始訓練
+
+```bash
+cd VLM
+tmux new -s stage2_train
+conda activate VLM
+python3 U-VLM/stage2/train.py
+# Ctrl+B, D 離開 tmux，之後用 tmux attach -t stage2_train 接回去看
+```
+
+`train.py` 前 `freeze_encoder_epochs`（預設 10）個 epoch 會凍結 encoder 只練分類 head，
+之後自動解凍、用 discriminative LR 一起微調（config.yaml 裡的 `train.head_lr`/`train.encoder_lr`），
+每個 epoch 存 `last.pt`（可用 `--resume` 接續）跟 `best_encoder.pt`/`best_head.pt`（val macro AUROC
+有進步才更新），`history.json` 每個 epoch 的指標都會寫進去。
+
+跑完（或想先看目前結果）用 `eval.py` 拿到 18 類的 AUROC/AUPRC + 假陰性人工核對用的 case dump：
+```bash
+python3 U-VLM/stage2/eval.py \
+  --encoder-checkpoint U-VLM/stage2/checkpoints/best_encoder.pt \
+  --head-checkpoint U-VLM/stage2/checkpoints/best_head.pt
+```
+
+**Batch size 提醒**：`config.yaml` 目前 `train.batch_size` 是 64（STAGE2_PLAN.md 第 8 節拍板的起跑值，
+理由是分類 head 記憶體用量遠小於 Stage 1 118 類 segmentation decoder），但沒有實測過。照 Stage 1
+在這台 L40S 上 batch 32 就 OOM 的教訓，第一次跑 Stage 2 訓練時留意前幾步會不會 OOM，會的話直接改
+`config.yaml` 的 `train.batch_size` 往下調（例如 48/32），不用改程式碼。

@@ -15,6 +15,7 @@ env/
 # 訓練產出（checkpoint/log/QA overlay，太大且可重新產生，不進 git）
 U-VLM/stage1/checkpoints/
 U-VLM/stage1/qa/
+U-VLM/stage2/checkpoints/
 
 # macOS / 工具本地狀態
 .DS_Store

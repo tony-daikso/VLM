@@ -1,0 +1,65 @@
+# U-VLM Stage 2（2D）分類 head 訓練設定
+# 對應 STAGE2_PLAN.md 第 8 節已拍板的 5 個決策：
+#   兩階段 fine-tune（前 10 epoch 凍結 encoder）/ pos_weight 上限 20 倍 /
+#   Hiatal hernia 保留在 18 類裡 / 分類 head 只用 f4 / batch_size 起跑值 64
+
+seed: 42
+
+data:
+  processed_rex_dir: data/processed_rex
+  splits_path: U-VLM/stage1/splits.json  # 沿用 Stage 1 的 ctrate split，不重新切（見第 3 節）
+  encoder_checkpoint: U-VLM/stage1/checkpoints/best_encoder.pt
+
+image:
+  resolution: 512
+  # 跟 Stage 1 完全一致，才能直接吃 Stage 1 encoder 權重（見 STAGE2_PLAN.md 第 3 節）
+  window_level: -600
+  window_width: 1500
+
+# 18 種病理，順序固定＝STAGE2_PLAN.md 1.1 節盛行率由高到低排序，
+# dataset.py / train.py / eval.py 都用這個順序組 18 維向量，不能改動順序
+labels:
+  - "Lung nodule"
+  - "Lung opacity"
+  - "Pulmonary fibrotic sequela"
+  - "Atelectasis"
+  - "Consolidation"
+  - "Lymphadenopathy"
+  - "Emphysema"
+  - "Arterial wall calcification"
+  - "Coronary artery wall calcification"
+  - "Bronchiectasis"
+  - "Pleural effusion"
+  - "Peribronchial thickening"
+  - "Medical material"
+  - "Interlobular septal thickening"
+  - "Pericardial effusion"
+  - "Mosaic attenuation pattern"
+  - "Cardiomegaly"
+  - "Hiatal hernia"
+
+augmentation:
+  hflip_prob: 0.5
+  rotation_deg: 10
+  scale_jitter: 0.1
+  intensity_jitter: 0.1
+
+model:
+  encoder_name: resnet34
+  head_hidden_dim: 256
+  dropout: 0.3
+
+train:
+  batch_size: 64
+  epochs: 80
+  early_stopping_patience: 20
+  freeze_encoder_epochs: 10  # 前 N epoch 凍結 encoder 只訓練 head（linear probe），之後解凍一起微調
+  optimizer: adamw
+  head_lr: 1.0e-3
+  encoder_lr: 1.0e-4
+  weight_decay: 1.0e-4
+  lr_scheduler: cosine
+  num_workers: 4
+  pos_weight_cap: 20.0
+  checkpoint_dir: U-VLM/stage2/checkpoints
+  log_every_n_steps: 20
