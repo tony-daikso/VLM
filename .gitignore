@@ -13,10 +13,15 @@ venv/
 env/
 
 # 訓練產出（checkpoint/log/QA overlay，太大且可重新產生，不進 git）
-U-VLM/stage1/checkpoints/
-U-VLM/stage1/qa/
-U-VLM/stage2/checkpoints/
-U-VLM/stage3/checkpoints/
+# 2026-09-16 U-VLM 資料夾重組成 CT/ 跟 X-ray/ 兩條 track 之後的路徑：
+U-VLM/CT/stage1/checkpoints/
+U-VLM/CT/stage1/qa/
+U-VLM/CT/stage2/checkpoints/
+U-VLM/CT/stage3/checkpoints/
+U-VLM/X-ray/cxr/stage1/checkpoints/
+U-VLM/X-ray/cxr/stage1/qa/
+U-VLM/X-ray/cxr/stage2/checkpoints/
+U-VLM/X-ray/cxr/stage3/checkpoints/
 
 # macOS / 工具本地狀態
 .DS_Store

@@ -1,0 +1,49 @@
+# U-VLM CXR Stage 1（PadChest-GR）訓練設定
+# 對應 STAGE1_PLAN.md 已拍板的決策：只做 lesion head（box->粗略mask）/ 512x512 / ResNet34+ImageNet 初始化
+
+seed: 42
+
+# 先指到縮小版 PadChest-GR-small（~5GB, 608 筆）確認整條 pipeline 跑得動；
+# 全量訓練時把這行改成 data/X-ray/PadChest-GR/processed 即可，其他都不用動
+# （manifest schema、label_groups.json 的 26 類索引兩邊完全一致）
+data:
+  processed_dir: data/X-ray/PadChest-GR-small/processed
+
+image:
+  resolution: 512
+  # PadChest-GR PNG 是 16-bit（見 STAGE1_PLAN.md 第 3/8 節），per-image 百分位 clip + min-max
+  # stretch 到 [0,1] 再映射到 [-1,1]（跟 CT 版 window_normalize 輸出範圍一致，方便共用同款
+  # ImageNet-adapted 1-channel encoder 的輸入假設）
+  percentile_low: 0.5
+  percentile_high: 99.5
+
+augmentation:
+  hflip_prob: 0.5
+  rotation_deg: 10
+  scale_jitter: 0.1
+  intensity_jitter: 0.1
+
+model:
+  encoder_name: resnet34
+  encoder_pretrained: true
+  decoder_channels: [256, 128, 64, 32, 16]
+
+train:
+  batch_size: 16 # 小資料集/先跑通流程用的保守值，全量訓練時再依 GPU 實測往上調（見待確認事項）
+  epochs: 100
+  early_stopping_patience: 20
+  optimizer: adamw
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  lr_scheduler: cosine
+  num_workers: 4
+  checkpoint_dir: U-VLM/X-ray/cxr/stage1/checkpoints
+  log_every_n_steps: 10
+
+loss:
+  dice_weight: 1.0
+  bce_weight: 1.0
+
+eval:
+  qa_overlay_dir: U-VLM/X-ray/cxr/stage1/qa
+  num_qa_overlays: 20
