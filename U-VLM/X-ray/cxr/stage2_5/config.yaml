@@ -4,11 +4,11 @@
 
 seed: 42
 
-# 先指到縮小版 PadChest-GR-small（跟 Stage 1/2 一致，608 筆）；全量訓練時把這行改成
-# data/X-ray/PadChest-GR/processed 即可
+# 全量資料（4,555 筆）。checkpoint/qa 輸出跟 Stage 1 encoder 來源都指到 /datadrive（持久化掛載點，
+# 這台 server 隨時可能被關機，見使用者交代事項）
 data:
-  processed_dir: data/X-ray/PadChest-GR-small/processed
-  encoder_checkpoint: U-VLM/X-ray/cxr/stage1/checkpoints/best_encoder.pt
+  processed_dir: data/X-ray/PadChest-GR/processed
+  encoder_checkpoint: /datadrive/VLM/U-VLM/X-ray/cxr/stage1/checkpoints/best_encoder.pt
 
 image:
   resolution: 512
@@ -74,11 +74,11 @@ train:
   weight_decay: 1.0e-4
   lr_scheduler: cosine
   num_workers: 4
-  checkpoint_dir: U-VLM/X-ray/cxr/stage2_5/checkpoints
+  checkpoint_dir: /datadrive/VLM/U-VLM/X-ray/cxr/stage2_5/checkpoints
   log_every_n_steps: 10
 
 eval:
   iou_threshold: 0.3
   topk: 100
-  qa_overlay_dir: U-VLM/X-ray/cxr/stage2_5/qa
+  qa_overlay_dir: /datadrive/VLM/U-VLM/X-ray/cxr/stage2_5/qa
   num_qa_overlays: 20
