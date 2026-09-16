@@ -4,9 +4,11 @@
 
 seed: 42
 
+# 全量資料（4,555 筆）。checkpoint 輸出跟 Stage 2 encoder 來源都指到 /datadrive（持久化掛載點，
+# 這台 server 隨時可能被關機，見使用者交代事項）
 data:
-  processed_dir: data/X-ray/PadChest-GR-small/processed
-  encoder_checkpoint: U-VLM/X-ray/cxr/stage2/checkpoints/best_encoder.pt
+  processed_dir: data/X-ray/PadChest-GR/processed
+  encoder_checkpoint: /datadrive/VLM/U-VLM/X-ray/cxr/stage2/checkpoints/best_encoder.pt
 
 image:
   resolution: 512
@@ -59,7 +61,7 @@ train:
   weight_decay: 0.01
   lr_scheduler: cosine
   num_workers: 4
-  checkpoint_dir: U-VLM/X-ray/cxr/stage3/checkpoints
+  checkpoint_dir: /datadrive/VLM/U-VLM/X-ray/cxr/stage3/checkpoints
   log_every_n_steps: 10
 
 eval:
