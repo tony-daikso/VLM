@@ -110,11 +110,26 @@ class DataAugmentationDINO(object):
         return crops
 
 
+CACHE_RESOLUTION = 320  # 比 global crop(224)大、比原圖(~1824x1652)小很多，讓 RandomResizedCrop
+                        # 還留有 zoom 的空間，同時把「decode 大圖 + 算 percentile」的成本從每個
+                        # epoch每次都做，降到只需要做一次（見下方 cache 邏輯）。
+
+
 class PadChestSSLDataset(Dataset):
+    """
+    第一次跑 smoke test 時發現：每個 sample 的 __getitem__（PIL decode 原圖 1824x1652 +
+    percentile normalize + 8 次 RandomResizedCrop/GaussianBlur）平均要 ~0.48 秒，导致 GPU
+    大部分時間在等 dataloader（nvidia-smi 常看到 0% 但其實訓練沒有卡住，只是 CPU-bound）。
+    這裡加一層磁碟 cache：把每張圖 percentile-normalize 完、縮到 CACHE_RESOLUTION 大小後存成
+    PNG，之後同一張圖只需要付一次這個成本，跟 U-VLM dataset.py 的 cache 慣例一致。
+    """
+
     def __init__(self, manifest_path, data_root, transform):
         self.records = load_manifest(manifest_path, split="train")
         self.data_root = data_root
         self.transform = transform
+        self.cache_dir = os.path.join(data_root, f"_cache_dino_ssl_r{CACHE_RESOLUTION}")
+        os.makedirs(self.cache_dir, exist_ok=True)
         if not self.records:
             raise ValueError(f"no train-split rows found in {manifest_path}")
 
@@ -123,9 +138,19 @@ class PadChestSSLDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.records[idx]
-        img_path = os.path.join(self.data_root, row["image_relpath"])
-        arr = np.array(Image.open(img_path))
-        arr = percentile_normalize_uint8(arr)
-        image = Image.fromarray(arr, mode="L").convert("RGB")
+        cache_path = os.path.join(self.cache_dir, f"{row['study_id']}.png")
+        if os.path.exists(cache_path):
+            image = Image.open(cache_path).convert("RGB")
+        else:
+            img_path = os.path.join(self.data_root, row["image_relpath"])
+            arr = np.array(Image.open(img_path))
+            arr = percentile_normalize_uint8(arr)
+            image = Image.fromarray(arr, mode="L").resize(
+                (CACHE_RESOLUTION, CACHE_RESOLUTION), Image.BICUBIC
+            )
+            tmp_path = cache_path + f".tmp{os.getpid()}"
+            image.save(tmp_path, format="PNG")
+            os.replace(tmp_path, cache_path)
+            image = image.convert("RGB")
         crops = self.transform(image)
         return crops

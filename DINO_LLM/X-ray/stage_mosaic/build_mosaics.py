@@ -11,6 +11,15 @@ z-score 轉 uint8。
 只會填進畫布左上角 5/900 格，其餘維持 0（等於 z-score 後的中性灰）。這點會在最終比較報告中
 明確記錄。
 
+另一個必要調整：PadChest-GR 原圖是 16-bit PNG（PIL mode "I;16"），跟學長原本 CT 版本已經先做過
+HU windowing + 轉 8-bit 的來源不一樣。一開始漏掉這步，直接 `Image.open().convert("RGB")` 會把
+16-bit 像素值naive 轉換、幾乎全部夾到接近全白（實測平均值 241.95/255），等於 DINO 看到的是張
+壞掉的圖。這裡改成跟 `stage_dino_ssl/dataset.py` 一致的 percentile normalize 流程。
+
+第三個調整（效能）：一開始是單執行緒一張張處理，decode 大圖 + percentile normalize 這步是
+CPU-bound，跑起來很慢卻沒善用這台機器的 12 核心。改成跟 Phase 2 訓練一樣，用 DataLoader +
+多個 worker 平行做 CPU 前處理，GPU 端則批次(batch)跑 DINO forward，兩邊重疊執行。
+
 用法：
     python3 build_mosaics.py \
         --manifest /root/Desktop/VLM/data/X-ray/PadChest-GR/processed/manifest.jsonl \
@@ -27,13 +36,16 @@ import numpy as np
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from dino.dino_model_c import load_dino_model
+from stage_dino_ssl.dataset import percentile_normalize_uint8
 
 FINAL_SIZE = 16 * 30  # 480，跟學長 llava_webhook.py 的 final_size 一致
 IMG_SIZE = 512
+IMG_TRANSFORM = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5] * 3, [0.5] * 3)])
 
 
 def to_uint8_zscore(x, k=3, eps=1e-8):
@@ -45,22 +57,35 @@ def to_uint8_zscore(x, k=3, eps=1e-8):
     return (y * 255.0 + 0.5).astype(np.uint8)
 
 
-def build_one_mosaic(model, img_path, device):
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5] * 3, [0.5] * 3)])
-    image = Image.open(img_path).convert("RGB").resize((IMG_SIZE, IMG_SIZE))
-    image = transform(image)
-    with torch.no_grad():
-        emb = model(image.unsqueeze(0).to(device)).cpu().numpy().reshape(1, -1).astype("float16")
+def embedding_to_mosaic(emb):
+    """emb: (1280,) float -> 480x480 RGB PIL Image，跟 dino_inference() 的邏輯一致。"""
     emb = emb.reshape(5, 16, 16)
-
     merge_img = np.zeros([FINAL_SIZE, FINAL_SIZE])
     for m in range(5):
         row, col = divmod(m, FINAL_SIZE // 16)
         merge_img[row * 16:(row + 1) * 16, col * 16:(col + 1) * 16] = emb[m]
-
     dino_img = to_uint8_zscore(merge_img)
     dino_img[np.where(merge_img == 0)] = 0
     return Image.fromarray(dino_img).convert("RGB")
+
+
+class MosaicSourceDataset(Dataset):
+    """負責 CPU-bound 的那段（decode 16-bit 原圖 + percentile normalize + resize），
+    交給 DataLoader 的多個 worker 平行做，GPU 端的 forward 在主行程批次跑。"""
+
+    def __init__(self, rows, data_root):
+        self.rows = rows
+        self.data_root = data_root
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, idx):
+        row = self.rows[idx]
+        img_path = os.path.join(self.data_root, row["image_relpath"])
+        arr = percentile_normalize_uint8(np.array(Image.open(img_path)))
+        image = Image.fromarray(arr, mode="L").convert("RGB").resize((IMG_SIZE, IMG_SIZE))
+        return row["study_id"], IMG_TRANSFORM(image)
 
 
 def load_manifest(path):
@@ -80,6 +105,8 @@ def main():
     ap.add_argument("--dino_checkpoint", required=True)
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--splits", nargs="+", default=["train", "validation", "test"])
+    ap.add_argument("--batch_size", type=int, default=32)
+    ap.add_argument("--num_workers", type=int, default=8)
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -90,15 +117,25 @@ def main():
         out_dir = os.path.join(args.output_dir, split)
         os.makedirs(out_dir, exist_ok=True)
         split_rows = [r for r in rows if r["split"] == split]
-        for i, row in enumerate(split_rows):
-            out_path = os.path.join(out_dir, f"{row['study_id']}.png")
-            if os.path.exists(out_path):
-                continue
-            img_path = os.path.join(args.data_root, row["image_relpath"])
-            mosaic = build_one_mosaic(model, img_path, device)
-            mosaic.save(out_path)
-            if (i + 1) % 200 == 0:
-                print(f"[{split}] {i + 1}/{len(split_rows)}")
+        pending = [r for r in split_rows if not os.path.exists(os.path.join(out_dir, f"{r['study_id']}.png"))]
+        if not pending:
+            print(f"[{split}] 全部 {len(split_rows)} 筆都已經有假圖，跳過")
+            continue
+
+        loader = DataLoader(
+            MosaicSourceDataset(pending, args.data_root),
+            batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False,
+        )
+        done = 0
+        with torch.no_grad():
+            for study_ids, images in loader:
+                embs = model(images.to(device)).cpu().numpy().astype("float16")
+                for study_id, emb in zip(study_ids, embs):
+                    mosaic = embedding_to_mosaic(emb)
+                    mosaic.save(os.path.join(out_dir, f"{study_id}.png"))
+                done += len(study_ids)
+                if done % 200 < args.batch_size:
+                    print(f"[{split}] {done}/{len(pending)}")
         print(f"[{split}] done, {len(split_rows)} mosaics -> {out_dir}")
 
 
