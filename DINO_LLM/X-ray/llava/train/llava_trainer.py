@@ -16,9 +16,11 @@ from typing import List, Optional
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
-    from deepspeed import zero
-    from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+    # 同 train.py 的 maybe_zero_3：deepspeed 只有真的用 ZeRO-3 時才需要，這裡改成延遲匯入，
+    # 不然單 GPU、沒裝 deepspeed 的情況下每次存 checkpoint 都會炸。
     if hasattr(param, "ds_id"):
+        from deepspeed import zero
+        from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
         if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
             if not ignore_status:
                 print(name, 'no ignore status')

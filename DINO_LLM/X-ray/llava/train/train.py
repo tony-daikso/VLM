@@ -116,9 +116,11 @@ class TrainingArguments(transformers.TrainingArguments):
     evaluation_strategy: Optional[str] = field(default="no")
 
 def maybe_zero_3(param, ignore_status=False, name=None):
-    from deepspeed import zero
-    from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+    # deepspeed 只在真的有用 deepspeed ZeRO-3 訓練（param 才會有 ds_id 屬性）時才需要匯入，
+    # 我們這次是單 GPU、沒有用 --deepspeed，硬匯入會直接因為套件沒裝而炸掉，改成延遲匯入。
     if hasattr(param, "ds_id"):
+        from deepspeed import zero
+        from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
         if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
             if not ignore_status:
                 logging.warning(f"{name}: param.ds_status != ZeroParamStatus.NOT_AVAILABLE: {param.ds_status}")
@@ -1321,12 +1323,17 @@ def train(attn_implementation=None):
             padding_side="right"
         )
     else:
+        # use_fast=False (slow/sentencepiece tokenizer) 在 unsloth/Llama-3.2-3B 這份鏡像上會
+        # 壞掉：tokenizer_config.json 裡 tokenizer_class 是通用的 "PreTrainedTokenizer"、也沒附
+        # 慢速 tokenizer 需要的 tokenizer.model，AutoTokenizer.from_pretrained 會直接回傳 True
+        # 而不是拋例外（後面 tokenizer.pad_token 會炸 AttributeError）。這份鏡像只有附快速
+        # tokenizer.json，改用 use_fast=True 已驗證可以正常載入。
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",
-            use_fast=False,
+            use_fast=True,
         )
 
     if model_args.version == "v0":
@@ -1377,7 +1384,14 @@ def train(attn_implementation=None):
 
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
         if model_args.tune_mm_mlp_adapter:
-            model.requires_grad_(False)
+            # 這行原本會把整個模型（包含剛剛才掛上去的 LoRA adapter）全部 requires_grad_(False)，
+            # 只留 mm_projector 可訓練——等於 lora_enable=True 時 LoRA 完全沒在學（smoke test
+            # 時實測 LoRA 參數 requires_grad 全部變 False，trainable params 數量剛好對上
+            # mm_projector 的參數量，不含任何 lora_ 參數）。改成只關掉「非 LoRA、非
+            # mm_projector」的參數，讓兩邊都能訓練。
+            for n, p in model.named_parameters():
+                if "lora_" not in n:
+                    p.requires_grad = False
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
 
