@@ -30,3 +30,10 @@ U-VLM/**/train.log
 # macOS / 工具本地狀態
 .DS_Store
 .claude/
+
+# 學長 DINO+LLaVA 舊專案原始交接資料（含病人 DICOM/PNG、寫死的密碼，使用者確認不用推）
+DINO_LLM/prior/
+
+# 這次 DINO+LLaVA baseline 的訓練產出（checkpoint/log/mosaic，指到 /datadrive，太大不進 git）
+DINO_LLM/X-ray/**/checkpoints/
+DINO_LLM/X-ray/**/*.log
