@@ -247,6 +247,16 @@ class LLaVATrainer(Trainer):
             if self.args.local_rank == 0 or self.args.local_rank == -1:
                 self.model.config.save_pretrained(output_dir)
                 torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
+                # 原本這裡只存 mm_projector，LoRA adapter 只有整個訓練結束後才存一次（在
+                # train.py 的 safe_save_model_for_hf_trainer）——等於每個 epoch 的 checkpoint
+                # 資料夾裡根本沒有那個 epoch 的 LoRA 權重，只有最後一個 epoch 的。這樣
+                # --evaluation_strategy epoch 存 eval_loss 選出來的「最佳 epoch」沒辦法真的
+                # 重建對應的模型。這裡補上：lora_enable 時，每個 epoch 也把當下的 LoRA
+                # adapter 存下來（PeftModel.save_pretrained 會存 adapter_config.json +
+                # adapter_model.safetensors），才能事後用 eval/eval.py 載入任一個 epoch 完整
+                # 評估。
+                if getattr(self.args, "lora_enable", False) and (self.args.local_rank == 0 or self.args.local_rank == -1):
+                    self.model.save_pretrained(output_dir)
         else:
             #super(LLaVATrainer, self)._save_checkpoint(model, trial, metrics)
             try:
