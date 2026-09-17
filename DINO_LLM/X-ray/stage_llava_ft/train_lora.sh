@@ -18,6 +18,13 @@
 # 變 -100，導致 loss 變成 NaN（smoke test 時實測到，且 Trainer 的 log 會把 NaN 顯示成誤導性的
 # 0.0，要另外印真正的 loss 才看得出來）。
 #
+# num_train_epochs=5 沒有嚴謹調過（這份鏡像的原始訓練過程完全沒留任何超參數紀錄，沒得參考）。
+# U-VLM 自己的 CXR Stage3（架構最相近的對照組）大概在 epoch 5 就是最佳點、之後就 overfit，
+# 這裡資料規模/任務單一程度都很像，很可能重演同樣的曲線。加了 --eval_data_path +
+# --evaluation_strategy epoch 才能實際看到每個 epoch 的 val loss，--save_total_limit 5 保留
+# 全部 5 個 epoch 的 checkpoint，讓 eval/eval.py 之後可以逐一比較，挑真正的最佳點，而不是
+# 假設「跑滿 5 epoch 的最後一個就是最好的」。
+#
 # 用法：bash train_lora.sh <LLAMA_MODEL_PATH_OR_HF_ID> <DATA_DIR> <OUTPUT_DIR>
 # 例：bash train_lora.sh meta-llama/Llama-3.2-3B /datadrive/VLM/DINO_LLM/X-ray/llava_data \
 #       /datadrive/VLM/DINO_LLM/X-ray/stage_llava_ft/checkpoints
@@ -39,6 +46,7 @@ PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/envs/workenv/envs/dino_llm/bin/python
     --model_name_or_path "$MODEL_PATH" \
     --version llama3 \
     --data_path "$DATA_DIR/train.json" \
+    --eval_data_path "$DATA_DIR/validation.json" \
     --image_folder / \
     --vision_tower openai/clip-vit-large-patch14-336 \
     --mm_projector_type mlp2x_gelu \
@@ -54,10 +62,11 @@ PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/envs/workenv/envs/dino_llm/bin/python
     --output_dir "$OUTPUT_DIR" \
     --num_train_epochs 5 \
     --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 4 \
-    --evaluation_strategy "no" \
+    --evaluation_strategy "epoch" \
     --save_strategy "epoch" \
-    --save_total_limit 2 \
+    --save_total_limit 5 \
     --learning_rate 2e-4 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
