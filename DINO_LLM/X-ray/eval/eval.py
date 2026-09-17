@@ -7,13 +7,15 @@ sacrebleu/rouge_score 計算方式、同樣的 26 個 label_group 關鍵字比�
 生成邏輯照抄 DINO_LLM/prior/inference.py::llava_inference()：固定 prompt
 "generate analysis report"、llama3 conversation template、temperature=0（greedy）。
 
-用法：
+用法（--llava_model 指某一個 epoch 的 checkpoint 資料夾，例如 eval_loss 最低的那個）：
     python3 eval.py \
-        --llava_model /datadrive/VLM/DINO_LLM/X-ray/stage_llava_ft/checkpoints \
+        --llava_model /datadrive/VLM/DINO_LLM/X-ray/stage_llava_ft/checkpoints/checkpoint-597 \
+        --model_base /datadrive/VLM/DINO_LLM/X-ray/models/Llama-3.2-3B \
         --manifest /root/Desktop/VLM/data/X-ray/PadChest-GR/processed/manifest.jsonl \
         --mosaic_dir /datadrive/VLM/DINO_LLM/X-ray/mosaics \
         --split validation \
-        --labels_config /root/Desktop/VLM/U-VLM/X-ray/cxr/stage3/config.yaml
+        --labels_config /root/Desktop/VLM/U-VLM/X-ray/cxr/stage3/config.yaml \
+        --out_dir /datadrive/VLM/DINO_LLM/X-ray/eval_results
 """
 import argparse
 import csv
@@ -29,13 +31,54 @@ from rouge_score import rouge_scorer
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import transformers
+
 from llava.constants import DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IMAGE_TOKEN_INDEX
 from llava.conversation import conv_templates
 from llava.mm_utils import process_images, tokenizer_image_token
-from llava.model.builder import load_pretrained_model
+from llava.model.language_model.llava_llama import LlavaLlamaForCausalLM
 
 PROMPT = "generate analysis report"
 CONV_MODE = "llama3"
+
+
+def load_model_for_eval(model_base, checkpoint_dir):
+    """
+    重寫一個專用的 loader，不用 llava/model/builder.py 通用的 load_pretrained_model()：
+    那支函式的 LoRA 分支假設 vocab_size 訓練時被 resize 過一格（給 pad token），會直接
+    `vocab_size - 1`，這裡的訓練流程因為 tokenizer 本來就有 pad_token（Llama-3.2 內建
+    `<|finetune_right_pad_id|>`），train.py 從沒進到 resize 那條分支，vocab_size 從頭到尾
+    跟 base model 一樣，用那個減一邏輯會直接對不上 shape。而且它靠 model_name 字串裡有沒有
+    "lora" 來判斷要走哪條路，這裡也懶得硬湊字串，直接照 stage_llava_ft/train_lora.sh 訓練時
+    的初始化流程重寫一次比較保險（跟 smoke test 驗證過的流程一致）。
+    """
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_base, use_fast=True)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = LlavaLlamaForCausalLM.from_pretrained(model_base, torch_dtype=torch.float16).cuda()
+    model.get_model().initialize_vision_modules(model_args=type("A", (), {
+        "vision_tower": "openai/clip-vit-large-patch14-336", "mm_vision_select_layer": -2,
+        "pretrain_mm_mlp_adapter": None, "mm_projector_type": "mlp2x_gelu", "mm_patch_merge_type": "flat",
+        "mm_vision_select_feature": "patch",
+    })())
+    vision_tower = model.get_vision_tower()
+    vision_tower.to(dtype=torch.float16, device="cuda")
+    model.config.mm_use_im_start_end = False
+    model.config.mm_use_im_patch_token = False
+
+    mm_projector_weights = torch.load(os.path.join(checkpoint_dir, "mm_projector.bin"), map_location="cpu")
+    model.get_model().mm_projector.load_state_dict(
+        {k.split("mm_projector.")[-1]: v for k, v in mm_projector_weights.items()}, strict=True,
+    )
+    model.get_model().mm_projector.to(dtype=torch.float16, device="cuda")
+
+    from peft import PeftModel
+    model = PeftModel.from_pretrained(model, checkpoint_dir)
+    model = model.merge_and_unload()
+    model.eval()
+
+    return tokenizer, model, vision_tower.image_processor
 
 
 def load_manifest(path, split):
@@ -113,8 +156,8 @@ def keyword_clinical_proxy(generated, gt_labels, label_names):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--llava_model", required=True, help="LoRA-merged (or base+adapter) LLaVA checkpoint dir")
-    ap.add_argument("--model_base", default=None, help="base LLM path if --llava_model is a LoRA adapter only")
+    ap.add_argument("--llava_model", required=True, help="LoRA checkpoint dir (has adapter_model.safetensors + mm_projector.bin)")
+    ap.add_argument("--model_base", required=True, help="base LLM path (e.g. .../models/Llama-3.2-3B)")
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--mosaic_dir", required=True)
     ap.add_argument("--split", default="validation", choices=["train", "validation", "test"])
@@ -126,10 +169,7 @@ def main():
     with open(args.labels_config) as f:
         label_names = yaml.safe_load(f)["labels"]
 
-    tokenizer, model, image_processor, _ = load_pretrained_model(
-        args.llava_model, args.model_base, "llava", device_map="cuda",
-    )
-    model.eval()
+    tokenizer, model, image_processor = load_model_for_eval(args.model_base, args.llava_model)
 
     rows = load_manifest(args.manifest, args.split)
     generated, references, study_ids, gt_labels = [], [], [], []
