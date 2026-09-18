@@ -34,6 +34,19 @@ U-VLM/**/train.log
 # 學長 DINO+LLaVA 舊專案原始交接資料（含病人 DICOM/PNG、寫死的密碼，使用者確認不用推）
 DINO_LLM/prior/
 
+# RADAR：checkpoint 太大且可重新產生（download_scripts/ 或已搬到 /datadrive/VLM/RADAR/ckpt/，本地只留 symlink），不進 git
+RADAR/ckpt/*.pth
+RADAR/ckpt/bert-base-chinese
+RADAR/ckpt/bert-base-uncased
+RADAR/ckpt/.gitattributes
+RADAR/ckpt/README.md
+RADAR/ckpt/radar_fig0.png
+RADAR/.venv_radar/
+
+# RADAR：CG 病人資料的推論結果/視覺化含病人影像，使用者確認不用推
+RADAR/results/visualizations/
+RADAR/results/RADAR_infer_results_CG_abdomen.csv
+
 # 這次 DINO+LLaVA baseline 的訓練產出（checkpoint/log/mosaic，指到 /datadrive，太大不進 git）
 DINO_LLM/X-ray/**/checkpoints/
 DINO_LLM/X-ray/**/*.log
