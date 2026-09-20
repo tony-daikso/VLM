@@ -44,6 +44,9 @@ RADAR/CT/ckpt/README.md
 RADAR/CT/ckpt/radar_fig0.png
 RADAR/CT/.venv_radar/
 
+# RADAR X-ray track：segmentation 預訓練 checkpoint 太大，不進 git（存 /datadrive 備份）
+RADAR/X-ray/ckpt/*.pth
+
 # RADAR：CG 病人資料的推論結果/視覺化含病人影像，使用者確認不用推
 RADAR/CT/results/visualizations/
 RADAR/CT/results/RADAR_infer_results_CG_abdomen.csv
