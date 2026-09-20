@@ -44,8 +44,10 @@ RADAR/CT/ckpt/README.md
 RADAR/CT/ckpt/radar_fig0.png
 RADAR/CT/.venv_radar/
 
-# RADAR X-ray track：segmentation 預訓練 checkpoint 太大，不進 git（存 /datadrive 備份）
+# RADAR X-ray track：checkpoint 太大且可重新產生，不進 git（存 /datadrive 備份）；
+# bert-base-uncased 是機器本地的 symlink（指到 /datadrive 絕對路徑），不是可攜的內容，也不進 git
 RADAR/X-ray/ckpt/*.pth
+RADAR/X-ray/ckpt/bert-base-uncased
 
 # RADAR：CG 病人資料的推論結果/視覺化含病人影像，使用者確認不用推
 RADAR/CT/results/visualizations/
