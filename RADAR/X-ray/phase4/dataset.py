@@ -46,6 +46,18 @@ LABELS_CSV_GZ = "/datadrive/VLM/data/X-ray/PadChest-Origin/other/PADCHEST_chest_
 IMG_SIZE = 512
 ORGANS = ["left_lung", "right_lung", "heart"]  # must match vision_branch.py/radar_pretrain.py self.organs order
 
+# any-organ-abnormal records get this weight in RadarXrayDataset.sample_weights()
+# (all-3-normal records get weight 1.0). Natural any-organ-abnormal rate in the
+# train split is ~12.7%, so at batch_size=8 the anatomy-wise ITC branch saw an
+# abnormal+intact sample for a given organ in well under 1 image per batch on
+# average (each organ's own abnormal rate is only 6-9%, since most findings are
+# localized to a single organ) -- see phase5/README.md for the derivation. A
+# weight of 6.0 raises the any-organ-abnormal fraction of a weighted-sampled
+# batch to ~46% in expectation (6*11408 / (6*11408 + 78772), using the train
+# split's actual any-abnormal/all-normal counts), giving that branch enough
+# signal per batch to actually learn from instead of being data-starved.
+ABNORMAL_OVERSAMPLE_WEIGHT = 6.0
+
 
 def percentile_normalize_uint8(arr, lo_pct=0.5, hi_pct=99.5):
     # vendored from DINO_LLM/X-ray/stage_dino_ssl/dataset.py -- see DATA_PREP_NOTES.md
@@ -119,6 +131,14 @@ class RadarXrayDataset(Dataset):
         self._members_by_name = None
         self._masks_tar = None
         self._mask_members_by_name = None
+
+    def sample_weights(self):
+        """Per-record weight for torch.utils.data.WeightedRandomSampler --
+        see ABNORMAL_OVERSAMPLE_WEIGHT's docstring above."""
+        return [
+            ABNORMAL_OVERSAMPLE_WEIGHT if any(rec["regions"][o]["abnormal"] for o in ORGANS) else 1.0
+            for rec in self.records
+        ]
 
     def _ensure_tar_open(self):
         # tarfile handles aren't fork-safe to share across DataLoader

@@ -53,6 +53,106 @@ sys.modules["lavis"] = _fake_lavis
 from lavis.common.registry import registry  # noqa: E402
 registry.register_path("library_root", os.path.abspath(_LAVIS_DIR))
 
+# --- transformers>=4.28 moved/removed these from transformers.modeling_utils
+# (med.py was vendored against transformers==4.25, which had them there).
+# Only needed because this environment can no longer install the exact
+# transformers==4.25 pin (its required tokenizers<0.14 has no prebuilt wheel
+# for Python 3.12 and no longer builds from source against current
+# rustc/crates -- see phase6/README.md's "環境修復記錄" for the full story).
+# apply_chunking_to_forward/prune_linear_layer just moved to pytorch_utils;
+# find_pruneable_heads_and_indices was removed outright, but it's only
+# reachable via BertSelfAttention.prune_heads(), which this RADAR pipeline
+# never calls (no head pruning) -- it only needs to exist at import time,
+# so it's vendored back in verbatim from pre-4.28 transformers.
+import transformers.modeling_utils as _hf_modeling_utils  # noqa: E402
+import transformers.pytorch_utils as _hf_pytorch_utils  # noqa: E402
+
+if not hasattr(_hf_modeling_utils, "apply_chunking_to_forward"):
+    _hf_modeling_utils.apply_chunking_to_forward = _hf_pytorch_utils.apply_chunking_to_forward
+if not hasattr(_hf_modeling_utils, "prune_linear_layer"):
+    _hf_modeling_utils.prune_linear_layer = _hf_pytorch_utils.prune_linear_layer
+if not hasattr(_hf_modeling_utils, "find_pruneable_heads_and_indices"):
+    def _find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
+        mask = torch.ones(n_heads, head_size)
+        heads = set(heads) - already_pruned_heads
+        for head in heads:
+            head = head - sum(1 if h < head else 0 for h in already_pruned_heads)
+            mask[head] = 0
+        mask = mask.view(-1).contiguous().eq(1)
+        index = torch.arange(len(mask))[mask].long()
+        return heads, index
+    _hf_modeling_utils.find_pruneable_heads_and_indices = _find_pruneable_heads_and_indices
+
+# med.py's BertModel/BertEmbeddings/etc. subclasses predate transformers'
+# post_init() convention (they call the older init_weights() directly), so
+# all_tied_weights_keys/_keep_in_fp32_modules/etc. -- which post_init() sets
+# and which newer from_pretrained()'s _finalize_model_loading() now assumes
+# exist -- never get set. Call post_init() ourselves right before the
+# original finalize step runs, only when it's actually missing.
+_orig_finalize_model_loading = _hf_modeling_utils.PreTrainedModel._finalize_model_loading
+
+
+@staticmethod
+def _patched_finalize_model_loading(model, load_config, loading_info):
+    if not hasattr(model, "all_tied_weights_keys"):
+        model.post_init()
+    return _orig_finalize_model_loading(model, load_config, loading_info)
+
+
+_hf_modeling_utils.PreTrainedModel._finalize_model_loading = _patched_finalize_model_loading
+
+# ModuleUtilsMixin's get_head_mask/get_extended_attention_mask/invert_attention_mask
+# were removed entirely in this transformers version (models now build attention
+# bias masks internally, e.g. for SDPA), but med.py's BertModel.forward() (a
+# pre-refactor vendored copy) still calls all three by name on `self`. These
+# implementations were stable/unchanged across transformers for years -- vendored
+# back in verbatim rather than rewriting med.py's forward() to not need them.
+if not hasattr(_hf_modeling_utils.PreTrainedModel, "get_extended_attention_mask"):
+    def _get_extended_attention_mask(self, attention_mask, input_shape, device=None, dtype=None):
+        if dtype is None:
+            dtype = next(self.parameters()).dtype
+        if attention_mask.dim() == 3:
+            extended_attention_mask = attention_mask[:, None, :, :]
+        elif attention_mask.dim() == 2:
+            extended_attention_mask = attention_mask[:, None, None, :]
+        else:
+            raise ValueError(f"Wrong shape for attention_mask (shape {attention_mask.shape})")
+        extended_attention_mask = extended_attention_mask.to(dtype=dtype)
+        extended_attention_mask = (1.0 - extended_attention_mask) * torch.finfo(dtype).min
+        return extended_attention_mask
+
+    def _invert_attention_mask(self, encoder_attention_mask):
+        if encoder_attention_mask.dim() == 3:
+            encoder_extended_attention_mask = encoder_attention_mask[:, None, :, :]
+        else:
+            encoder_extended_attention_mask = encoder_attention_mask[:, None, None, :]
+        dtype = next(self.parameters()).dtype
+        encoder_extended_attention_mask = encoder_extended_attention_mask.to(dtype=dtype)
+        encoder_extended_attention_mask = (1.0 - encoder_extended_attention_mask) * torch.finfo(dtype).min
+        return encoder_extended_attention_mask
+
+    def _convert_head_mask_to_5d(self, head_mask, num_hidden_layers):
+        if head_mask.dim() == 1:
+            head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+        elif head_mask.dim() == 2:
+            head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+        return head_mask.to(dtype=next(self.parameters()).dtype)
+
+    def _get_head_mask(self, head_mask, num_hidden_layers, is_attention_chunked=False):
+        if head_mask is not None:
+            head_mask = self._convert_head_mask_to_5d(head_mask, num_hidden_layers)
+            if is_attention_chunked:
+                head_mask = head_mask.unsqueeze(-1)
+        else:
+            head_mask = [None] * num_hidden_layers
+        return head_mask
+
+    _hf_modeling_utils.PreTrainedModel.get_extended_attention_mask = _get_extended_attention_mask
+    _hf_modeling_utils.PreTrainedModel.invert_attention_mask = _invert_attention_mask
+    _hf_modeling_utils.PreTrainedModel._convert_head_mask_to_5d = _convert_head_mask_to_5d
+    _hf_modeling_utils.PreTrainedModel.get_head_mask = _get_head_mask
+
 from lavis.models.med import XBertEncoder  # noqa: E402
 from lavis.models.radar_models.radar_pretrain import RadarPretrain  # noqa: E402
 
@@ -63,12 +163,31 @@ _PHASE4_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ph
 sys.path.insert(0, _PHASE4_DIR)
 from dataset import RadarXrayDataset  # noqa: E402
 
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
+
+
+def _fix_position_ids_buffer(bert_module):
+    # transformers' from_pretrained() constructs modules under a meta-device
+    # "fast init" context for speed; med.py's BertEmbeddings.__init__
+    # registers position_ids via torch.arange(...) at construction time, but
+    # under fast-init that arange never gets materialized -- the buffer ends
+    # up with garbage/uninitialized memory (confirmed: max() was a huge
+    # garbage int64, not 511) unless a loaded checkpoint's state_dict happens
+    # to also contain and restore it. zero_shot_eval.py's build_model() never
+    # hit this because loading the trained RadarPretrain checkpoint there
+    # incidentally overwrites it with a valid value; train.py trains from
+    # scratch (no such checkpoint), so it must be fixed explicitly here,
+    # before RadarPretrain.__init__ deepcopies text_encoder into
+    # text_encoder_m (so the momentum copy inherits the fix too).
+    emb = bert_module.embeddings
+    n = emb.position_ids.shape[-1]
+    emb.position_ids.copy_(torch.arange(n, device=emb.position_ids.device).expand_as(emb.position_ids))
 
 
 def build_model(device):
     image_encoder = VisionBranch()  # auto-loads Phase 3's checkpoint_unet_xray.pth if present
     text_encoder = XBertEncoder.from_config({"med_config_path": "unused"}, from_pretrained=True)
+    _fix_position_ids_buffer(text_encoder)
     model = RadarPretrain(
         image_encoder=image_encoder,
         text_encoder=text_encoder,
@@ -132,10 +251,21 @@ def main():
     print(f"RadarPretrain params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M")
 
     ds = RadarXrayDataset(split="train")
-    if args.epochs is None and args.limit and args.limit < len(ds):
-        idx = np.random.RandomState(args.seed).choice(len(ds), size=args.limit, replace=False)
-        ds = Subset(ds, idx.tolist())
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
+    if args.epochs is not None:
+        # full-training mode: oversample any-organ-abnormal records so the
+        # anatomy-wise ITC branch actually sees enough abnormal+intact
+        # samples per batch to learn from (natural rate is only ~12.7%,
+        # i.e. ~1 per batch of 8 -- see phase5/README.md's "batch 內異常樣本
+        # 太少" section for the math). Quick-verify mode below keeps plain
+        # shuffling since it's for debugging the pipeline, not measuring
+        # real training signal.
+        sampler = WeightedRandomSampler(ds.sample_weights(), num_samples=len(ds), replacement=True)
+        loader = DataLoader(ds, batch_size=args.batch_size, sampler=sampler, num_workers=4, drop_last=True)
+    else:
+        if args.limit and args.limit < len(ds):
+            idx = np.random.RandomState(args.seed).choice(len(ds), size=args.limit, replace=False)
+            ds = Subset(ds, idx.tolist())
+        loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
     print(f"train set: {len(ds)} records, {len(loader)} batches/epoch at batch_size={args.batch_size}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)

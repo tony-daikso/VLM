@@ -68,7 +68,70 @@ CT track 共用的 checkpoint 目錄 `/datadrive/VLM/RADAR/ckpt/bert-base-uncase
 
 **batch size 的教訓**：實測發現加大 batch size 反而更慢(batch=8 時 31.5 張/秒，batch=16 降到 22.5 張/秒，batch=32 直接 OOM)，原因是 `radar_pretrain.py` 的 `get_roi_features`(anatomy-wise ITC 分支)用 Python for 迴圈逐筆處理每個樣本的 cross-attention，不是向量化運算，batch 越大這段迴圈開銷越不成比例地增加。這是 vendored 模型程式碼本身的限制，要真正加速得改寫這段迴圈，這次沒有動它。
 
+## zero-shot AUC 評估結果與後續修正(2026-09-21)
+
+`RADAR/X-ray/phase6/zero_shot_eval.py`(用 `Labels` 欄位仿照 CT 版 `calc_metrics.py` 算 AUC，細節見該檔案 README)在上面這個 checkpoint 上跑出來 **AvgAUC ≈ 0.51**，幾乎等於隨機猜測。診斷過程跟修正記錄如下。
+
+### 診斷
+
+先查了訓練集的 caption 分佈，發現兩個問題，嚴重程度不同：
+
+1. **whole-image ITC 分支的 caption 重複率很高，而且沒有處理**：訓練集 90,180 張裡，36.7% 的 `whole_image_caption` 字串完全就是 `"normal."`（跟 PadChest 論文自己講的整體異常率 ~64.5% 一致，不是資料異常率低，而是「異常」跟「正常」各自的措辭都高度模板化、重複率高——論文 Fig.5 自己也講「前 1,000 個最常見句子佔全部句子 46%」）。原本的 in-batch InfoNCE loss 把對角線以外的每個樣本都當硬負例，即使兩張圖的 caption 逐字相同，也被迫拉開——這是在教模型學錯誤的訊號。
+2. **anatomy-wise ITC 分支的異常樣本密度太低**：每個器官(left_lung/right_lung/heart)的異常比例只有 6~9%，`batch_size=8` 時平均每個 batch 只有 0.5~0.7 張「該器官異常且完整」的圖，訓練訊號極度稀疏。
+
+深入看 `radar_pretrain.py` 才發現：**anatomy-wise 分支其實早就有第 1 點的修法**(`semantic_matrix_batch`/`semantic_matrix_batch1`，逐字比對 caption + 用 momentum text encoder 算異常 caption 間的語意相似度當 soft target)，是 CT 版原始程式碼帶著的設計，port 到 X-ray 時原樣繼承，只是先前沒注意到。**whole-image 分支則完全沒有這個機制**，純對角線 one-hot。所以修正方向明確：whole-image 補上跟 anatomy 分支一樣的機制，anatomy 分支則需要解決樣本密度問題。
+
+### 修正一:whole-image 分支的 loss target(`phase3/lavis/models/radar_models/radar_pretrain.py`)
+
+在 whole-image ITC 分支的 `sim_targets_whole` 構建那段，比照 anatomy 分支已有的做法，把「batch 內 caption 逐字相同」的樣本也標記成正例，而不是負例:
+
+```python
+sim_targets_whole = torch.zeros(sim_i2t_whole.size()).to(image.device)
+sim_targets_whole.fill_diagonal_(1)
+
+# 新增：batch 內 caption 逐字相同的樣本互相標記為正例(distributed 時先跨 rank gather)
+cl_text_input_whole_arr = np.array(cl_text_input_whole)
+... # gather across ranks if distributed
+same_caption_whole = cl_text_input_whole_all[:, None] == cl_text_input_whole_all[None, :]
+same_caption_whole = torch.from_numpy(same_caption_whole.astype(float)).to(image.device)
+same_caption_whole.fill_diagonal_(0)
+
+sim_targets_whole += same_caption_whole
+sim_targets_whole /= sim_targets_whole.sum(1, keepdim=True)  # 重新正規化成機率分佈
+```
+
+只做了「逐字比對」這一半(沒有額外加 anatomy 分支那個 momentum text encoder 語意相似度的部分)，因為我們的 `"normal."` caption 本身永遠是同一個字串、沒有措辭變化，逐字比對已經完全覆蓋「同為正常」的情況，不像 CT 版可能有多種正常措辭需要語意相似度才能抓到。
+
+### 修正二:anatomy-wise 分支的樣本密度(`phase4/dataset.py` + `phase5/train.py`)
+
+在 `RadarXrayDataset` 加了 `sample_weights()`，對「任一器官異常」的記錄給權重 `ABNORMAL_OVERSAMPLE_WEIGHT = 6.0`(其餘給 1.0)；`train.py` 在 `--epochs` 全量訓練模式下改用 `WeightedRandomSampler` 取代 `shuffle=True`。權重 6.0 是算過的:訓練集任一器官異常率 12.7%(11,408/90,180)，套用權重後預期抽樣分佈變成 `(6×11408)/(6×11408+78772) ≈ 46%`。實測驗證(見下方)完全對得上。
+
+**驗證結果**(純 CPU、不需 GPU，抽樣 90,180 次比對):
+
+| | 自然比例 | 加權後 |
+|---|---|---|
+| 任一器官異常 | 12.7% | 46.4% |
+| left_lung 異常 | 8.7% | 32.0% |
+| right_lung 異常 | 9.2% | 33.8% |
+| heart 異常 | 6.2% | 22.6% |
+
+batch_size=8 下，每個器官平均可學的異常樣本數從 0.5~0.7 張提升到 1.8~2.7 張。
+
+### 額外發現並修正的環境 bug(跟 loss/sampler 邏輯無關，但擋住了驗證)
+
+在跑 smoke test 驗證上面兩個修正時，`train.py` 直接從零訓練(不像 `zero_shot_eval.py` 會載入已訓練好的 checkpoint)踩到一個新環境的 bug：`med.py` 的 `BertEmbeddings` 用 `torch.arange(...)` 建立的 `position_ids` buffer，在新版 `transformers` 的 `from_pretrained()` 快速初始化(meta device)機制下，沒有被正確寫入真正的數值，殘留垂圾記憶體(実測 `.max()` 是天文數字，不是 511)，導致 `position_embeddings` 查表 CUDA index-out-of-bounds 崩潰。`zero_shot_eval.py` 沒踩到是因為它載入訓練好的 checkpoint 時，state_dict 裡剛好也存了(舊環境下正確初始化的)這個 buffer，覆蓋掉了垂圾值，掩蓋了問題。修法是 `build_model()` 裡明確用正確的 `torch.arange(...)` 值重寫這個 buffer(兩個檔案都加了這個修正，`zero_shot_eval.py` 那邊是防禦性的，不再依賴 checkpoint 覆蓋的副作用)。
+
+### 驗證方式
+
+1. 小規模 `--limit 200 --steps 30`：確認 loss target 修正沒有 shape/邏輯錯誤，whole-image 分支 loss 數值在合理範圍(1.2~2.5，跟原本文件記錄的 2.1~2.5 相近)
+2. 純 CPU 抽樣驗證(見上表)：確認 sampler 的實際抽樣分佈符合計算預期
+3. 真正的 `--epochs 1` 路徑跑 ~560 batch(smoke test，非完整 epoch)：確認 sampler + loss 修正整合起來不會崩潰，loss 數值都是有限值——注意這裡看到的 `running_itc≈3.9` 比修正前的 `2.554` 高，這是預期中的，不是變差：soft target 讓 cross-entropy 的理論下限不再是 0，新舊數值不能直接比大小，要看訓練過程中會不會持續下降
+
+### 目前狀態
+
+兩個修正都驗證通過後，已重新啟動全量 10 epoch 訓練(`--epochs 10 --batch-size 8 --lr 1e-4`，同樣的參數)，預期一樣要跑 ~9 小時。訓練完成後要重新跑一次 `phase6/zero_shot_eval.py` 看 AUC 有沒有改善。
+
 ## 還沒做的(留給使用者決定要不要繼續)
 
-- **zero-shot AUC 評估**：用 `Labels` 欄位算 AUC(仿照 CT 版 `calc_metrics.py`)，驗證學到的表徵有沒有用——這是唯一還沒驗證「訓練出來的模型到底有沒有用」的一步
-- 如果 AUC 結果不理想，可以考慮：跑更多 epoch(目前看起來還沒完全收斂)、向量化 `get_roi_features` 加速訓練、或調整 learning rate schedule(這次全程用固定 `1e-4`，沒有用 `radar_config.yaml` 建議的 warmup+cosine schedule)
+- 上面這輪重新訓練跑完後，重跑 zero-shot AUC 評估，看兩個修正有沒有實際幫助
+- 如果還是不理想，可以考慮：向量化 `get_roi_features` 才能真正加大 batch size(目前 batch=8 是效能瓶頸，不是刻意選擇)、調整 learning rate schedule(這次全程用固定 `1e-4`，沒有用 `radar_config.yaml` 建議的 warmup+cosine schedule)

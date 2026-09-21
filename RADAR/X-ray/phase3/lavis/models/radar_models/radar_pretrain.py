@@ -192,11 +192,37 @@ class RadarPretrain(RadarBase, SharedQueueMixin, MomentumDistilationMixin):
 
             sim_i2t_whole = image_feat_all_whole @ text_feat_all_whole.t() / self.temp
             sim_t2i_whole = text_feat_all_whole @ image_feat_all_whole.t() / self.temp
-                
+
             with torch.no_grad():
                 sim_targets_whole = torch.zeros(sim_i2t_whole.size()).to(image.device)
                 sim_targets_whole.fill_diagonal_(1)
-                
+
+                # PadChest's rule-based whole_image_caption vocabulary is
+                # heavily templated (>90% "normal." for a given organ, and
+                # even at the whole-image level ~37% of captions are the
+                # literal string "normal.", plus repeats among the other
+                # ~174 finding tokens) -- treating another sample's
+                # byte-identical caption as a hard negative teaches the
+                # model to split apart image pairs whose true caption is
+                # the same string, which is actively wrong. Mirrors the
+                # anatomy-wise branch's own semantic_matrix_batch1 handling
+                # below (this dataset's "normal." caption never varies in
+                # wording, so unlike the anatomy branch there is no separate
+                # normal_flag term needed -- exact match already covers it).
+                cl_text_input_whole_arr = np.array(cl_text_input_whole)
+                if is_dist_avail_and_initialized():
+                    gathered_whole_text = all_gather(cl_text_input_whole_arr)
+                    cl_text_input_whole_all = np.concatenate(gathered_whole_text)
+                else:
+                    cl_text_input_whole_all = cl_text_input_whole_arr
+
+                same_caption_whole = cl_text_input_whole_all[:, None] == cl_text_input_whole_all[None, :]
+                same_caption_whole = torch.from_numpy(same_caption_whole.astype(float)).to(image.device)
+                same_caption_whole.fill_diagonal_(0)
+
+                sim_targets_whole += same_caption_whole
+                sim_targets_whole /= sim_targets_whole.sum(1, keepdim=True)
+
             sim_i2t_targets_whole = sim_targets_whole
             sim_t2i_targets_whole = sim_targets_whole
 
