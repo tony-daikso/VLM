@@ -1,0 +1,26 @@
+# Vision-engine configuration for CT brain/head
+# Single canonical configuration with clean structure
+
+modality: CT
+anatomy: brain
+
+# Modality-specific processing settings
+processing:
+  crop_pad:
+    size: [512, 512]  # Target size (H, W) - crop or pad to this
+  resampling:
+    target_spacing: [0.5, 0.5, 1.25]  # Fine brain CT spacing (x, y, z in mm)
+  conversion_backend: "sitk"
+  # Slice selection - automatically select middle slices
+  slice_selection:
+    enabled: true
+    slices: 128  # Select middle 128 slices for brain CT
+
+# External exporter configuration
+# Use one of: lz4_fast, video_hevc
+exporter_config: "video_hevc"  # HEVC video compression for 3D volumes
+
+# Logging
+logging:
+  level: "INFO"
+  file: null

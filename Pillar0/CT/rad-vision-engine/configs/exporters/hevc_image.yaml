@@ -1,0 +1,15 @@
+compression: "hevc_image"
+
+hevc_image:
+  crf: 18           # Quality (lower is better). 18~20 is visually lossless
+  preset: "ultrafast"  # ultrafast..placebo. Choose faster for throughput
+  pix_fmt: "yuv420p10le"  # 10-bit. Use yuv444p10le to preserve full chroma
+  container: "mp4"  # mp4 or mkv
+
+parallel:
+  workers: 8
+
+output:
+  extension: ".mp4"
+  overwrite: false
+

@@ -1,0 +1,23 @@
+modality: MR
+anatomy: prostate
+processing:
+  crop_pad:
+    size:
+    - 768
+    - 768
+  resampling:
+    target_spacing:
+    - 0.2
+    - 0.2
+    - 3.0
+  conversion_backend: sitk
+  slice_selection:
+    enabled: true
+    slices: 48
+  debug:
+    save_resampled_nifti: false
+    output_dir: test_output_mr/intermediate_nifti
+exporter_config: video_hevc_mr
+logging:
+  level: INFO
+  file: null

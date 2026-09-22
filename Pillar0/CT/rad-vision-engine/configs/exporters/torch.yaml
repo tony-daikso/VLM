@@ -1,0 +1,23 @@
+# PyTorch tensor exporter configuration
+# Single config for all PyTorch tensor exports - just change the dtype
+
+exporter:
+  compression: torch
+  
+  torch:
+    # Data type for tensors: float32, float16, bfloat16, int16, int32, uint8
+    dtype: bfloat16  # <-- Change this to whatever dtype you need
+    
+    # LZ4 compression level (0-12, higher = better compression but slower)
+    # Set to -1 to disable compression (raw tar file)
+    compression_level: -1  # No compression for faster loading
+    
+    # Whether to normalize data to [0, 1] range before conversion
+    normalize: false
+    
+    # Whether to preserve original data range in metadata
+    preserve_range: true
+    
+# Parallel processing settings
+parallel:
+  workers: 32  # Number of parallel export workers

@@ -1,0 +1,30 @@
+# Vision-engine configuration for MR breast
+# Based on chest CT configuration with modifications for breast MR
+
+modality: MR
+anatomy: breast
+
+# Modality-specific processing settings
+processing:
+  crop_pad:
+    size: [384, 384]  # Higher resolution for breast MR (H, W) - crop or pad to this
+  resampling:
+    target_spacing: [1, 1, 1.0]  # Higher resolution spacing for breast MR (x, y, z in mm)
+  conversion_backend: "sitk"
+  # Slice selection - automatically select middle slices
+  slice_selection:
+    enabled: true
+    slices: 192  # Select middle 128 slices for breast MR
+  # Debug helpers
+  debug:
+    save_resampled_nifti: false
+    output_dir: test_output_mr/intermediate_nifti
+
+# External exporter configuration
+# Use one of: lz4_fast, video_hevc
+exporter_config: "video_hevc_mr"  # MR-specific HEVC video compression for 3D volumes
+
+# Logging
+logging:
+  level: "INFO"
+  file: null

@@ -1,0 +1,29 @@
+# Vision-engine configuration for mammography
+modality: MG
+anatomy: breast
+
+# Modality-specific processing settings
+processing:
+  crop_pad:
+    size: [2048, 2048]  # Target display size (H, W) after center crop/pad
+  windowing:
+    method: "minmax"  # Apply min-max normalization for easier viewing in JP2000
+  resampling:
+    # Optional: resample using DICOM PixelSpacing to this (x, y) spacing in mm
+    # Examples: [0.07, 0.07] for high-res mammo; set to null to disable
+    target_spacing: [0.14, 0.14]
+  conversion_backend: "pydicom"
+
+# External exporter configuration
+# HEVC Main10 provides 10-bit depth with fast hardware/software decoders
+# Use one of: hevc_image, lz4_fast
+exporter_config: "hevc_image"  # 10-bit HEVC intra per-image
+
+# Performance
+parallel:
+  workers: 4
+
+# Logging
+logging:
+  level: "INFO"
+  file: null

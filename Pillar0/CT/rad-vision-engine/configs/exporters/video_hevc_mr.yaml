@@ -1,0 +1,28 @@
+# Video codec exporter configuration for MR imaging
+# Uses full 16-bit range instead of CT's Hounsfield units
+
+compression: "video"
+
+video:
+  codec: "libx265"       # Force CPU encoder (disable auto GPU detection)
+  bit_depth: 10          # 10-bit encoding
+  crf: 6                 # High quality lossy (match CT default)
+  gop_size: 128          # Group of Pictures size (short for random access)
+  hu_min: 0              # MR uses full uint16 range
+  hu_max: 65535          # Full 16-bit range for MR
+  preset: "ultrafast"     # Encoding preset (match CT default)
+  archive: false         # Whether to produce a .tar (true) or folder with mkv+metadata (false)
+  lossless: false        # Use lossy x265 for consistency with CT
+
+# Parallel processing configuration
+parallel:
+  workers: 32
+
+# Logging configuration
+logging:
+  level: "INFO"
+
+output:
+  extension: ".mp4"
+  overwrite: false
+

@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: totalfm
+Version: 1.0.0
+Summary: TotalFM: An Organ-Separated Framework for 3D-CT Vision Foundation Models
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: torch>=2.0.0
+Requires-Dist: numpy
+Requires-Dist: SimpleITK
+Requires-Dist: einops
+Requires-Dist: transformers>=4.44.0
+Requires-Dist: huggingface_hub
+Requires-Dist: timm
+Requires-Dist: tqdm
+Dynamic: license-file

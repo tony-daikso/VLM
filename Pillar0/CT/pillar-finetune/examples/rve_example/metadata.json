@@ -1,0 +1,65 @@
+{
+  "series_info": {
+    "accession": "example",
+    "series_number": 1,
+    "series_uid": "example",
+    "series_description": "",
+    "modality": "CT",
+    "slice_count": 159
+  },
+  "processing_metadata": {
+    "modality": "CT",
+    "anatomy": "chest",
+    "original_spacing": [
+      0.625,
+      0.625,
+      2.0
+    ],
+    "target_spacing": [
+      1.25,
+      1.25,
+      1.25
+    ],
+    "original_shape": [
+      159,
+      512,
+      512
+    ],
+    "final_shape": [
+      254,
+      384,
+      384
+    ],
+    "crop_pad_target": [
+      384,
+      384
+    ],
+    "slice_count": 254,
+    "value_range": "raw_hounsfield_units",
+    "series_uid": "example",
+    "slice_info": []
+  },
+  "export_info": {
+    "format": "video",
+    "encoder": "libx265",
+    "codec": "LIBX265",
+    "bit_depth": 10,
+    "crf": 6,
+    "gop_size": 128,
+    "archived": false,
+    "hu_mapping": {
+      "min": -1024,
+      "max": 3071,
+      "output_range": [
+        0,
+        1023
+      ]
+    },
+    "exporter_version": "1.1",
+    "hardware_accelerated": false
+  },
+  "source_data": {
+    "dicom_directory": "/example/path/to/dicom/directory",
+    "study_directory": "/example/path/to/study/directory"
+  }
+}

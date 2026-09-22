@@ -1,0 +1,2 @@
+[console_scripts]
+totalfm = totalfm.cli:main

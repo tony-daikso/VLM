@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "totalfm"
+version = "1.0.0"
+description = "TotalFM: An Organ-Separated Framework for 3D-CT Vision Foundation Models"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy",
+    "SimpleITK",
+    "einops",
+    "transformers>=4.44.0",
+    "huggingface_hub",
+    "timm",
+    "tqdm",
+]
+
+[project.scripts]
+totalfm = "totalfm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

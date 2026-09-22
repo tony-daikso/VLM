@@ -1,0 +1,27 @@
+# Vision-engine configuration for X-ray imaging
+modality: XR
+anatomy: chest
+
+# Modality-specific processing settings
+processing:
+  resize: [1024, 1024]  # Standard size for X-rays (moved from export)
+  # Universal percentile windowing (works for all modalities/anatomies)
+  windowing:
+    method: "none"  # Default to raw values for maximum flexibility
+  resampling:
+    target_spacing: null  # X-rays are 2D
+  conversion_backend: "sitk"
+
+# External exporter configuration
+# Use HEVC image (Main10) for efficient 10-bit intra-coded frames
+# Options include: hevc_image, lz4_fast
+exporter_config: "hevc_image"
+
+# Performance
+parallel:
+  workers: 4
+
+# Logging
+logging:
+  level: "INFO"
+  file: null

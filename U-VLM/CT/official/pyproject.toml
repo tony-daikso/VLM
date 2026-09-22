@@ -1,0 +1,86 @@
+[project]
+name = "uvlm"
+version = "1.0.0"
+requires-python = ">=3.9"
+description = "U-VLM: Hierarchical Vision Language Modeling for Report Generation"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Pengcheng Shi", email = "shipc1220@gmail.com"},
+    { name = "Medical Image Insights" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Healthcare Industry",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+keywords = [
+    'deep learning',
+    'medical image analysis',
+    'vision-language model',
+    'radiology report generation',
+    'progressive training',
+    'multi-layer injection',
+    'U-Net',
+    'nnU-Net'
+]
+dependencies = [
+    "torch>=2.1.2,!=2.9.*",
+    "nnunetv2>=2.2",
+    "transformers>=4.36.0",
+    "peft>=0.7.0",
+    "accelerate>=0.25.0",
+    "blosc2>=3.0.0b1",
+    "batchgenerators>=0.25.1",
+    "acvl-utils>=0.2.3,<0.3",
+    "dynamic-network-architectures>=0.4.1,<0.5",
+    "tqdm",
+    "scipy",
+    "numpy>=1.24",
+    "pandas",
+    "scikit-learn",
+    "scikit-image>=0.19.3",
+    "SimpleITK>=2.2.1",
+    "einops>=0.6.0",
+    "tokenizers>=0.13.0",
+    "nibabel>=4.0.0",
+    "pydicom>=2.3.0",
+    "pyyaml>=6.0",
+    "seaborn>=0.12.0",
+    "matplotlib",
+    "imagecodecs",
+    "yacs",
+]
+
+[project.urls]
+homepage = "https://github.com/yinghemedical/U-VLM"
+repository = "https://github.com/yinghemedical/U-VLM"
+documentation = "https://arxiv.org/abs/2603.00479"
+
+[project.scripts]
+uvlm_train = "uvlm.run.uvlm_train:run_training_entry"
+uvlm_inference = "uvlm.inference.__main__:main"
+uvlm_evaluate = "uvlm.evaluation.__main__:main"
+
+[project.optional-dependencies]
+quantization = [
+    "bitsandbytes>=0.41.0"
+]
+dev = [
+    "black",
+    "ruff",
+    "pre-commit"
+]
+
+[build-system]
+requires = ["setuptools>=67.8.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["uvlm*"]

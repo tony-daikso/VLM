@@ -1,0 +1,24 @@
+# Core dependencies
+numpy>=1.21.0
+pandas>=1.3.0
+Pillow>=8.0.0
+PyYAML>=5.4.0
+lz4>=4.0.0
+opencv-python-headless>=4.0.0
+
+# Medical imaging
+pydicom>=2.3.0
+SimpleITK>=2.1.0
+torchio>=0.18.0
+nibabel>=5.0.0
+
+# Image processing
+scikit-image>=0.18.0
+matplotlib>=3.5.0
+
+# CLI and utilities
+tqdm>=4.62.0
+
+# Development and testing (optional)
+pytest>=6.0.0
+pytest-cov>=2.12.0 

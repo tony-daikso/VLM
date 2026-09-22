@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rad-vision-engine"
+dynamic = ["dependencies"]
+version = "1.0.0"
+description = "A high-performance medical image processing engine"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+keywords = ["medical-imaging", "dicom", "preprocessing", "radiology", "deep-learning"]
+authors = [
+    {name = "YALA Lab", email = "yala@berkeley.edu"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Healthcare Industry",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/YalaLab/rad-vision-engine"
+Documentation = "https://github.com/YalaLab/rad-vision-engine/blob/main/README.md"
+Repository = "https://github.com/YalaLab/rad-vision-engine"
+Issues = "https://github.com/YalaLab/rad-vision-engine/issues"
+
+[project.scripts]
+vision-engine = "vision_engine.cli.main:main"
+rve = "vision_engine.cli.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0.0",
+    "pytest-cov>=2.12.0", 
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "ruff>=0.4.9",
+]
+
+[tool.setuptools]
+packages = {find = {include = ["vision_engine*", "rve*"]}}
+include-package-data = true
+
+[tool.setuptools.package-data]
+vision_engine = ["**/*.yaml"]
+rve = ["*.py"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["rve", "vision_engine", "examples"]
+extend-exclude = [
+    "build",
+    "dist",
+    "rad_vision_engine.egg-info",
+    "merlin_cache_1.5mm",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "W",  # pycodestyle warnings
+    "B",  # flake8-bugbear
+    "I",  # isort
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rve", "vision_engine"]

@@ -1,0 +1,16 @@
+# LZ4 Exporter Configuration - Fast compression for training
+# This configuration prioritizes speed over compression ratio
+
+compression: "lz4"
+
+lz4:
+  compression_level: 3  # 0=fastest, 16=best compression. Level 3 is a good balance
+  
+# Performance settings specific to this exporter
+parallel:
+  workers: 6  # Uses 12 threads for I/O-bound tasks
+  
+# Optional exporter-specific settings
+output:
+  extension: ".tar.lz4"
+  overwrite: false

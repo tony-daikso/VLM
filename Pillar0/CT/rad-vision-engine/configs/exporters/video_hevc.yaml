@@ -1,0 +1,27 @@
+# Video codec exporter configuration using HEVC (H.265)
+# Uses 10-bit encoding for medical imaging precision
+
+compression: "video"
+
+video:
+  codec: "libx265"       # Force CPU encoder (disable auto GPU detection), use codec="hevc" for GPU encoder
+  bit_depth: 10          # 10-bit encoding for 1024 levels
+  crf: 6                # Constant Rate Factor (very high quality for diagnostic use)
+  gop_size: 128           # Group of Pictures size (short for random access)
+  hu_min: -1024          # Minimum HU value to map
+  hu_max: 3071           # Maximum HU value to map (4096 range total)
+  preset: "ultrafast"     # Encoding preset (best compression efficiency)
+  archive: false          # Whether to produce a .tar (true) or folder with mkv+metadata (false)
+
+# Parallel processing configuration
+parallel:
+  workers: 32  # Video encoding is CPU intensive, use fewer workers
+
+# Logging configuration
+logging:
+  level: "INFO"
+
+
+output:
+  extension: ".mp4"
+  overwrite: false

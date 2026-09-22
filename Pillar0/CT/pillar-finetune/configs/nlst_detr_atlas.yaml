@@ -1,0 +1,185 @@
+# NLST DETR Atlas Configuration
+# This config is for training on NLST dataset with DETR object detection
+# and Atlas backbone for lung cancer risk prediction
+
+experiment:
+  name: NLST_FT_Atlas_unimodal_detr
+  tags: ["nlst", "detr", "atlas", "apply-pooling"]
+  notes: "Fine-tuning Atlas with DETR for lung cancer prediction"
+
+main:
+  exp_name: NLST_FT_Atlas_unimodal_detr
+  seed: 42
+  log_dir: ./logs
+  checkpoints_dir: ./logs/localization
+  timestamp_save_dir: False
+
+  disable_wandb: False
+  wandb_offline: False
+  wandb_project: pillar-finetune
+  wandb_entity: yala-lab
+
+  ckpt_freq: 1
+  monitor: val_c_index
+
+  allow_overwriting_experiment_checkpoints: True
+  find_unused_parameters: True
+  force_loading_train_dataloader: False
+
+  phases:
+    train: True
+    dev: True
+    test: True
+
+engine:
+  type: Classifier
+  max_epochs: 50
+  kwargs:
+    resume: null
+    accumulate_grad_batches: 1
+    precision: bf16-mixed
+    binary_pred: True
+    log_loss_components: True
+    log_interval: 50
+    limit_num_batches: null
+    use_gpu_augs: True
+    train_gpu_augs:
+      - type: RandomRotation3D
+        kwargs:
+          degrees: [0.0, 0.0, 20.0]
+    test_gpu_augs: []
+
+dataloader:
+  batch_size: 1
+  eval_batch_size: 1
+  num_workers: 4
+  class_bal: True
+  train_drop_last: True
+  val_drop_last: True
+  multi_gpu_eval: True
+  persistent_workers: False
+  prefetch_factor: null
+  clip_grad: null
+  no_shuffle_training_set: False
+  use_null_collate: False
+  frac_train_samples: 1.0
+  no_cache_misses_allowed: False
+
+dataset:
+  type: RVECacheNLST
+  modality: CT
+  num_classes: 2
+
+  shared_dataset_kwargs:
+    num_images: 256
+    max_followup: 6
+    anatomy: "chest_ct"
+    windows: 'all'
+    use_annotations: True
+    fix_seed_for_multi_image_augmentations: True
+
+    # Data paths - UPDATE THESE FOR YOUR ENVIRONMENT
+    dataset_file_path: data/nlst_dataset/full_nlst_google.json
+    rve_cache_dir: data/nlst_r384x384x384_ultrafast_libx265/nlst_r384x384x384_ultrafast_libx265
+    rve_masks_dir: data/nlst_r384x384x384_ultrafast_libx265/bounding_masks_rve_resampled_384x384x384/outputs/nlst_masks_resampled_384/
+    region_annotations_filepath: data/nlst_dataset/nlst_annotations.json
+
+  dataset_train_kwargs:
+    ignore_exams: [1249862907]
+
+  dataset_dev_kwargs: {}
+
+  dataset_test_kwargs: {}
+
+  img_size:
+    - 256
+    - 256
+  num_chan: 1
+  img_mean: [128.1722]
+  img_std: [87.1849]
+
+model:
+  type: MultiStage
+  kwargs:
+    pool_name: MultiAttentionPool
+    pool_kwargs:
+      hidden_dim: 1152
+
+    backbone_model_type: MultimodalAtlas
+    backbone_kwargs:
+      pretrained: True
+      model_repo_id: YalaLab/Pillar0-ChestCT
+      model_revision: main
+
+    head_models:
+      survival:
+        type: CumulativeProbabilityLayer
+        kwargs:
+          input_dim: 1152
+          max_followup: 6
+        apply_pooling: True
+        use_pooled_features: False
+        enable_at_eval: True
+
+      detr:
+        type: DETR3D
+        use_pooled_features: False
+        apply_pooling: False
+        kwargs:
+          input_dim: 1152
+          num_classes: 1
+          num_queries: 1
+          transformer_kwargs:
+            d_model: 128
+            dropout: 0.1
+            nhead: 1
+            dim_feedforward: 128
+            num_encoder_layers: 2
+            num_decoder_layers: 2
+            normalize_before: False
+        enable_at_eval: False
+
+optimizer:
+  type: AdamW
+  kwargs:
+    lr: 1.0e-5
+    weight_decay: 0.0
+
+  scheduler:
+    interval: epoch
+    frequency: 1
+    type: CosineAnnealingWarmup
+    kwargs:
+      min_lr: 2.0e-5
+      warmup_epochs: 4
+      max_epochs: 50
+
+  layer_decay: 0.9
+
+metrics:
+  epoch_metrics:
+    train: &base_metrics
+      - type: SurvivalMetric
+        kwargs:
+          logit_key: survival
+    val: *base_metrics
+    test: *base_metrics
+
+  losses:
+    - type: SurvivalLoss
+      weight: 1.0
+      kwargs:
+        logit_key: survival
+
+    - type: SybilRegionAnnotationLoss
+      weight: 1.0
+      kwargs:
+        image_attention_loss_lambda: 1.0
+        volume_attention_loss_lambda: 1.0
+
+    - type: DETRObjectDetectionLoss
+      weight: 1.0
+      kwargs:
+        num_classes: 1
+        nested_key: detr
+      enable_at_eval: False

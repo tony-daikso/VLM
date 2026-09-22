@@ -1,0 +1,19 @@
+# Include configuration files
+recursive-include configs *.yaml
+recursive-include vision_engine/configs *.yaml
+
+# Include documentation
+include README.md
+include LICENSE
+include requirements.txt
+
+# Include example scripts
+recursive-include examples *.py
+
+# Exclude unnecessary files
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude .git*
+recursive-exclude test_* *
+recursive-exclude tests *
