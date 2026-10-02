@@ -10,6 +10,15 @@ data/CT/merlin/*
 !data/CT/merlin/reference_mappings/
 !data/CT/merlin/llm_check/
 data/CT/merlin/llm_check/**/*.json
+# CG 自有資料：只放程式碼（報告與 LLM 輸出都含報告原文，不進 git）
+!data/CT/CG/
+data/CT/CG/*
+!data/CT/CG/radar_preprocess/
+data/CT/CG/radar_preprocess/*
+!data/CT/CG/radar_preprocess/scripts/
+!data/CT/CG/radar_preprocess/claude_check/
+data/CT/CG/radar_preprocess/claude_check/*
+!data/CT/CG/radar_preprocess/claude_check/compare_claude.py
 
 # Python
 __pycache__/

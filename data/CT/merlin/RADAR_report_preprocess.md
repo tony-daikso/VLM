@@ -513,6 +513,170 @@ Step 1 嚴格版重新和第 8 節的 300 份比對：一致率 99.40% → **99.
 
 ---
 
+## 11. 自有資料 CG：本機 LLM 版（2026-10-02）
+
+三個 step 都用 LLM（本機 Qwen），不用第 8–10 節的規則版。
+
+所有檔案在 `/datadrive/VLM/data/CT/CG/radar_preprocess/`（以下簡稱 `radar_preprocess/`）。程式碼的複本在 git repo 的 `data/CT/CG/radar_preprocess/`（`scripts/`、`claude_check/compare_claude.py`），實際執行用的是 `/datadrive` 上那份，改了要同步。報告、jsonl、Claude 標註都含報告原文，不進 git。
+
+| 路徑 | 內容 |
+|---|---|
+| `scripts/radar_llm_preprocess.py` | 官方作法（逐器官提問），含 `prepare`（CSV → JSON） |
+| `scripts/radar_llm_preprocess_combined.py` | **目前使用**：一次呼叫完成三個 step |
+| `scripts/run_full.sh`、`scripts/watchdog.sh` | 全量執行、掛掉自動重啟 |
+| `scripts/compare_pilot.py` | 合併版 vs 逐器官版比對 |
+| `claude_check/` | Claude 盲測標註與比對（`compare_claude.py`） |
+| `logs/` | 各次試跑與全量的 log |
+
+### 資料
+
+- 來源：`/datadrive/VLM/data/CT/CG/ct_report_1001.csv`，欄位 `year, month, type, report`，共 **950,274 份**（abdomen 381,997、brain 349,393、chest 218,884），2006–2015 年，英文 Markdown 格式報告。
+- **CSV 沒有病人 / 檢查 ID**，以列號編號為 `CG0000000`～`CG0950273`；重複的報告（184 筆）保留。
+- `prepare` 轉成 `cg_report.json`：`{pid: {report, findings, impression, split, type, year, month}}`。以 `Impression` 切出 findings / impression（12.3 萬份沒有 Impression）。`split` 全部設為 `train`。
+- 報告送進 LLM 前與官方相同，壓成一行（`\n` → 空白、連續空白合併）。
+
+**brain 暫不處理**：26 個器官都在頸部以下，腦部報告幾乎不會提到。試跑 207 份 brain 平均只有 0.09 個器官 = yes，幾乎都是報告順帶寫到的頸椎，或是 brain 類裡的多部位外傷報告。這些報告也沒有對應的腹部影像，對 RADAR 訓練幾乎沒有貢獻，卻要花約 1/3 的計算時間。之後要補跑，在 `run_full.sh` 的 `--types` 加上 `brain` 即可，已完成的會自動跳過。
+
+### 環境
+
+- 模型：`Qwen/Qwen3.8-27B-FP8`（`/root/models/Qwen3.8-27B-FP8`，31 GB）。與 ollama 裡的 `qwen3.8:27b` 同一個模型，ollama 版是 Q4_K_M GGUF。
+- 推論：vLLM 0.30.0（cu129 build），conda 環境 `vllm`，與 `VLM` 環境分開。單張 L40S 46 GB。
+- 實測 ollama 一次只處理一個請求，約 0.35 秒 / 次呼叫，照官方逐器官作法全量要數月，所以改用 vLLM 離線批次推論（`LLM.chat`）。
+- 碰到的問題：
+
+| 問題 | 解法 |
+|---|---|
+| PyPI 的 vLLM wheel 是 CUDA 13，driver 只支援 12.9（`libcudart.so.13` 找不到） | 改裝 GitHub release 的 `vllm-0.30.0+cu129` wheel |
+| flashinfer sampler JIT 編譯失敗（系統 nvcc 12.4 不認得 `--compress-mode`） | `VLLM_USE_FLASHINFER_SAMPLER=0` |
+| `max_num_seqs exceeds available Mamba cache blocks` | Qwen3.8 是 hybrid 架構（Gated DeltaNet），每個序列要一個 Mamba cache block。`max_num_seqs` 降到 128（開 MTP 時），`gpu_memory_utilization=0.94` |
+| 停止時只殺 python 父程序，`VLLM::EngineCore` 子程序繼續占住 GPU | 用 process group 停（`kill -- -<pgid>`），watchdog 重啟前也會清掉殘留的 EngineCore |
+| ollama 載入模型會占 GPU | `run_full.sh` 啟動時送 `keep_alive: 0` 讓 ollama 卸載；全量期間不要用 ollama |
+
+### 方法：一次呼叫完成三個 step
+
+官方作法每份報告要問約 38 次（Step 1 問 26 次，再對每個提及的器官各問 Step 2、3 一次）。vLLM 的 prefix caching 對這個 hybrid 模型幫助不大，每次呼叫都要重新 prefill 整份報告。
+
+| 版本（同樣前 200 份 abdomen） | 速度 | 全量 95 萬份估計 |
+|---|---|---|
+| 官方逐器官（`radar_llm_preprocess.py`） | Step 1 0.24 份/秒、Step 2 0.66、Step 3 0.97，合計約 6 秒 / 份 | 約 70 天 |
+| 合併版（`radar_llm_preprocess_combined.py`） | 約 1 份/秒 | 約 10 天 |
+
+合併版的 prompt：報告放最前面，接著是官方補充解剖知識、嚴格規則（見下一小節），最後是官方三個 step 的指令改寫成「對 26 個器官逐一回答」。輸出用 vLLM structured outputs 限制成 JSON schema：
+
+```json
+{"adrenal gland": "no", "aorta": "no", ..., "liver": {"description": "...", "status": "abnormal"}, ...}
+```
+
+- 26 個器官都必須照順序回答。v1 只要求列出有提及的器官，結果漏判 kidney、pancreas 這類寫在合併句裡的器官，還會亂填 `Not mentioned in the report.`，Step 1 只有 95.2% 一致。
+- 未提及的器官直接寫 `"no"`，並設定 `disable_any_whitespace`。模型原本輸出排版過的 JSON（平均約 640 token，報告本身只有約 211 token），改成緊湊格式後約 256 token，decode 量少了約 60%。
+- 開啟 MTP speculative decoding（`num_speculative_tokens=2`）：混合樣本上 0.72 → 0.83 份/秒。
+- greedy decoding（temperature 0）。輸出不合格時用 temperature 0.7 重試一次，仍失敗則記為 `未处理成功：...`（同官方）。
+- 輸出檔名與格式同官方：`cg_report_mention.json`、`cg_report_organ_report.json`、`cg_report_organ_normal.json`。
+
+合併版 vs 官方逐器官版（同一個 Qwen、前 200 份 abdomen、都用官方補充解剖知識）：
+
+| | v1 | v2（逐一回答） | v3（+ 緊湊 + MTP） |
+|---|---|---|---|
+| Step 1 逐格一致率 | 95.21% | 99.06% | 99.15% |
+| Step 3 一致率 | 99.53% | 98.98% | 99.24% |
+| 速度（abdomen） | 1.24 份/秒 | 0.73 | 混合樣本 1.08 |
+
+Step 2 的內容相同但寫法不同：逐器官版常只取述語（`unremarkable`），合併版保留整句（`The spleen is unremarkable.`）。
+
+### 嚴格規則（加在官方補充解剖知識之後）
+
+依第 7 節的嚴格判法，再加上 Claude 抽查發現的修正（見下一小節）。程式中的常數為 `STRICT_RULES`，`--lenient` 可以關掉。
+
+```
+Rules for deciding whether an organ is mentioned (strict):
+- Answer "yes" only if the report explicitly names the organ, one of its parts or sub-structures, or a finding that is by definition located in it (e.g. hepatic, renal, colonic, splenomegaly, hydronephrosis, cholecystitis).
+- General region or system terms do not count for a specific organ: e.g. "gastrointestinal tract", "bowel", "bowel loops", "vasculature", "vessels", "musculoskeletal", "bones", "osseous structures", "spine" without a level, "lower thorax", "urinary tract", "obstructive uropathy".
+- An organ used only as a location reference does not count: e.g. "para-aortic / periaortic lymph nodes" is not the aorta, "ureteral stone at the L4 level" is not the lumbar vertebrae, "mass adjacent to the inferior vena cava" is not the inferior vena cava, unless the report describes the organ itself (e.g. invasion, compression, thrombus).
+- A hiatal (hiatus) hernia is a description relating to the stomach.
+- The pericardium and the coronary arteries are part of the heart.
+- Portal hypertension, portosystemic collaterals or shunts (e.g. splenorenal shunt) and varices of the portal system are descriptions relating to the portal vein, and make it abnormal even if the portal vein is patent.
+```
+
+### Qwen vs Claude 抽查
+
+- 樣本：從 v3 試跑中抽 200 份（`random.seed(2026)`，abdomen 150、chest 50），檔案在 `claude_check/`：`sample_pids.json`、`in/batch_*.json`。
+- 6 個 Claude subagent 盲測（看不到 Qwen 結果、不寫規則程式，自己讀報告判讀），拿到的是與 Qwen 相同的指令。
+- 比對：`python3 claude_check/compare_claude.py <claude 目錄> <qwen tag>`。
+
+| | 第 1 輪：只用官方補充知識（`out/` vs `_v3`） | **第 2 輪：加嚴格規則（`out_strict/` vs `_v4strict`）** |
+|---|---|---|
+| Step 1 逐格一致率 | 98.35% | **99.58%** |
+| 26 格完全相同的報告 | 149 / 200 | **181 / 200** |
+| Qwen precision / recall（以 Claude 為準） | 98.5% / 94.5% | **99.1% / 99.1%** |
+| Qwen 多判 / 漏判 | 18 / 68 格 | **11 / 11 格** |
+| Step 3 一致率 | 98.89% | **99.40%** |
+| Step 2 平均 token F1 | 81.9% | 80.7% |
+| 平均 yes / 份（Qwen / Claude） | 5.94 / 6.19 | 5.88 / 5.88 |
+
+第 1 輪的主要差異，也是加嚴格規則的原因：
+- 籠統的 `Gastrointestinal System: Unremarkable.`：Claude 判給 small / large bowel，Qwen 不判（30 格）。屬判斷尺度差異，嚴格規則統一為不算。
+- `hiatal hernia`：Qwen 幾乎都沒判 stomach（12 格），與第 8 節 Merlin 抽查結果相同。
+- 位置詞：`para-aortic lymph node`、`at the L4/5 level`，Qwen 判為 aorta、lumbar vertebrae。
+- Step 3：portal vein `patent` 但同時有 portal hypertension 或 splenorenal shunt 時，Qwen 判 normal、Claude 判 abnormal；有 coronary calcification 時，Qwen 把 heart 判 normal。
+
+第 2 輪剩下的差異（各 1–6 格，未再修）：
+- Qwen 漏判明確寫出的 large bowel：`Unremarkable rectum`、`Colon normal`（6 格）。
+- Qwen 仍有位置詞誤判：`scan coverage ... to the liver level` → liver、`paratracheal lymph node` → trachea。
+- 規則沒涵蓋：`pulmonary embolism` 是否算 pulmonary artery；`No pericardial effusion` 算 heart（Claude 判 yes，Qwen 有時判 no）。
+
+Step 2 的 F1 偏低，多半是寫法不同：多器官合寫的句子（`The visualized liver, spleen, ... are unremarkable.`），Qwen 會把整句給每個器官，Claude 只取 `Unremarkable.`。
+
+⚠️ 第 2 輪中，嚴格規則的修正項目是依第 1 輪同一批 200 份的差異寫的，99.58% 會略偏樂觀。
+
+### 全量執行
+
+- 範圍：abdomen + chest，共 **600,881 份**，順序 abdomen → chest。2026-10-02 05:15 開始，實測 0.97 份/秒，**ETA 約 171 小時（約 10/9 完成）**。
+- 進度：每完成一批（2,000 份，約 35 分鐘）寫入 `radar_preprocess/cg_report_combined.jsonl`，一份報告一行：`{"pid", "report", "result": {organ: {description, status}}}`。`result` 只列出 yes 的器官，`null` 表示重試後仍失敗。
+- 官方格式的三個 JSON 在全部跑完時才寫出。中途想取得目前結果可執行下面的指令；它只讀 jsonl，不影響正在跑的程式：
+
+```bash
+cd /datadrive/VLM/data/CT/CG/radar_preprocess/scripts
+python3 radar_llm_preprocess_combined.py --finalize-only
+```
+
+- 看進度：`tail logs/full.log`（已完成份數與 ETA）、`logs/watchdog.log`（自動重啟紀錄）、`logs/check_batch.log`（每批檢查結果）。
+
+**每批檢查**（`scripts/check_batch.py`，每完成一批 2,000 份就檢查一次，結果記在 `logs/check_batch.log`）。正常的批次標 `OK`；任何一項超出範圍就標 `WARN`，並附上例子：
+
+| 項目 | 範圍 | 前 2 批實測 |
+|---|---|---|
+| 重試後仍失敗的報告 | ≤ 1% | 0 |
+| 平均 yes / 份 | 3–10 | 6.1 |
+| 0 個器官的報告 | ≤ 5% | 約 1% |
+| abnormal 比例 | 15–70% | 約 43% |
+| 描述用字大多不在報告裡（< 60% 重疊） | ≤ 3% | 6 / 24,473 |
+| 「not mentioned」這類空描述 | ≤ 0.5% | 0 |
+| 模型自己的說明（`(Note: the report ...)`） | ≤ 0.2% | 4 / 24,473 |
+
+模型說明這類描述很少見，但出現時該器官通常也是誤判。例如 `large bowel: Post-operative changes of the stomach. (Note: The report lists 'Colon' ... but provides no specific findings ...)`。所以產出最終 JSON 時（`finalize`），這類器官會改判為未提及。正在跑的全量程式是改版前啟動的，所以由 watchdog 在全量結束（`EXIT 0`）後，用新版程式再執行一次 `--finalize-only` 產出最終檔案。
+
+**中斷與續跑**：
+- 重新啟動時會跳過 jsonl 中已完成的 pid，從斷點接著跑。最多損失斷掉當下還沒寫入的那一批（≤ 2,000 份）。
+- **程式自己掛掉**（OOM、vLLM 錯誤等）：`watchdog.sh` 每分鐘檢查一次，會清掉殘留的 EngineCore 再重啟 `run_full.sh`，最多 20 次。全量以 `EXIT 0` 結束後 watchdog 會自己停止。
+- **整台 server 重開機**：程式和 watchdog 都會停。這台是 container（沒有 cron / systemd 開機自動啟動），開機後要手動執行：
+
+```bash
+cd /datadrive/VLM/data/CT/CG/radar_preprocess/scripts && (setsid nohup ./watchdog.sh > /dev/null 2>&1 &)
+```
+
+- 寫到一半斷掉留下的半行，讀取時會略過；重新開始寫入前會先補換行，避免下一筆接在同一行而遺失。
+
+### 限制與待辦
+
+- 合併 prompt 與官方逐器官 prompt 不完全相同（加了嚴格規則，輸出是 JSON），結果和官方作法有約 1% 的差異（見上表）。
+- Step 2 描述保留整句，常帶器官名稱（`The spleen is unremarkable.`）；官方 demo 多只取述語（`Normal.`）。
+- 多器官合寫的句子會原封不動給每個器官，caption 會重複。
+- 訓練時未提及的器官仍依第 5 節補成 `"normal."`。
+- brain 未處理。split 全部是 train，之後要切 val / test 需另外指定。
+- CSV 沒有 ID，報告和影像要另外對應。
+
+---
+
 ## 附錄：公開的 keyword → anatomy 字典（交叉驗證用）
 
 RADAR 本身**不使用**規則字典。以下是其他專案中實際存在的字典（2026-09-30 查證），只在想用規則檢查 LLM 結果時參考：
