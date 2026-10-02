@@ -1,5 +1,15 @@
 # 資料集（太大，不進 git；資料怎麼重建/怎麼搬看 HANDOFF.md / U-VLM/stage1/REMOTE_SETUP.md）
-data/
+data/*
+# 例外：Merlin 報告前處理的程式碼跟文件要進 git（資料 JSON、PDF、原始資料集仍不進）
+!data/CT/
+data/CT/*
+!data/CT/merlin/
+data/CT/merlin/*
+!data/CT/merlin/RADAR_report_preprocess.md
+!data/CT/merlin/scripts/
+!data/CT/merlin/reference_mappings/
+!data/CT/merlin/llm_check/
+data/CT/merlin/llm_check/**/*.json
 
 # Python
 __pycache__/

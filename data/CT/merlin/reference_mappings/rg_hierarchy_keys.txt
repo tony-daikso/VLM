@@ -1,0 +1,240 @@
+239
+lung
+  lung
+    left lung
+      left lung lower lobe
+      left lung upper lobe
+    right lung
+      right lung lower lobe
+      right lung middle lobe
+      right lung upper lobe
+    lung lower lobe
+      left lung lower lobe
+      right lung lower lobe
+    lung upper lobe
+      left lung upper lobe
+      right lung upper lobe
+trachea and bronchie
+  trachea
+  bronchie
+mediastinum
+  brachiocephalic trunk
+  brachiocephalic vein
+    left brachiocephalic vein
+    right brachiocephalic vein
+  superior vena cava
+  aorta
+  pulmonary artery
+  thymus
+  pulmonary vein
+  mediastinal tissue
+  subclavian artery
+    left subclavian artery
+    right subclavian artery
+heart
+  heart
+    heart atrium
+      left heart atrium
+      right heart atrium
+    heart ventricle
+      left heart ventricle
+      right heart ventricle
+    heart ascending aorta
+    heart tissue
+      myocardium
+    left auricle of heart
+esophagus
+  esophagus
+    cervical esophagus
+    cricopharyngeal inlet
+pleura
+  pleura
+bone
+  bone
+    spinal cord
+    spinal canal
+    vertebrae
+      cervical vertebrae
+        cervical vertebrae 1 (c1)
+        cervical vertebrae 2 (c2)
+        cervical vertebrae 3 (c3)
+        cervical vertebrae 4 (c4)
+        cervical vertebrae 5 (c5)
+        cervical vertebrae 6 (c6)
+        cervical vertebrae 7 (c7)
+      thoracic vertebrae
+        thoracic vertebrae 1 (t1)
+        thoracic vertebrae 2 (t2)
+        thoracic vertebrae 3 (t3)
+        thoracic vertebrae 4 (t4)
+        thoracic vertebrae 5 (t5)
+        thoracic vertebrae 6 (t6)
+        thoracic vertebrae 7 (t7)
+        thoracic vertebrae 8 (t8)
+        thoracic vertebrae 9 (t9)
+        thoracic vertebrae 10 (t10)
+        thoracic vertebrae 11 (t11)
+        thoracic vertebrae 12 (t12)
+      lumbar vertebrae
+        lumbar vertebrae 1 (l1)
+        lumbar vertebrae 2 (l2)
+        lumbar vertebrae 3 (l3)
+        lumbar vertebrae 4 (l4)
+        lumbar vertebrae 5 (l5)
+        lumbar vertebrae 6 (l6)
+      sacral vertebrae 1 (s1)
+    clavicle
+      left clavicle
+      right clavicle
+    scapula
+      left scapula
+      right scapula
+    humerus
+      left humerus
+      right humerus
+    femur
+      left femur
+      right femur
+    head of femur
+      left head of femur
+      right head of femur
+    rib
+      left rib
+        left rib 1
+        left rib 2
+        left rib 3
+        left rib 4
+        left rib 5
+        left rib 6
+        left rib 7
+        left rib 8
+        left rib 9
+        left rib 10
+        left rib 11
+        left rib 12
+      right rib
+        right rib 1
+        right rib 2
+        right rib 3
+        right rib 4
+        right rib 5
+        right rib 6
+        right rib 7
+        right rib 8
+        right rib 9
+        right rib 10
+        right rib 11
+        right rib 12
+      rib 1
+        left rib 1
+        right rib 1
+      rib 2
+        left rib 2
+        right rib 2
+      rib 3
+        left rib 3
+        right rib 3
+      rib 4
+        left rib 4
+        right rib 4
+      rib 5
+        left rib 5
+        right rib 5
+      rib 6
+        left rib 6
+        right rib 6
+      rib 7
+        left rib 7
+        right rib 7
+      rib 8
+        left rib 8
+        right rib 8
+      rib 9
+        left rib 9
+        right rib 9
+      rib 10
+        left rib 10
+        right rib 10
+      rib 11
+        left rib 11
+        right rib 11
+      rib 12
+        left rib 12
+        right rib 12
+      rib cartilage
+      costal cartilage
+    sternum
+      manubrium of sternum
+    eustachian tube bone
+      left eustachian tube bone
+      right eustachian tube bone
+thyroid
+  thyroid
+    thyroid gland
+      left thyroid
+      right thyroid
+breast
+  breast
+    left breast
+    right breast
+abdomen
+  abdomen
+    abdominal tissue
+    adrenal gland
+      left adrenal gland
+      right adrenal gland
+    aorta
+    colon
+    duodenum
+    gallbladder
+    intestine
+      small bowel
+    kidney
+      left kidney
+      right kidney
+    liver
+      left lobe of liver
+        left lateral inferior segment of liver
+        left lateral superior segment of liver
+        left medial segment of liver
+      right lobe of liver
+        right anterior inferior segment of liver
+        right anterior superior segment of liver
+        right posterior inferior segment of liver
+        right posterior superior segment of liver
+      liver vessel
+      caudate lobe
+    pancreas
+    portal vein and splenic vein
+    rectum
+    renal artery
+    renal vein
+    spleen
+    stomach
+    celiac trunk
+others
+  thoracic cavity
+  prostate
+  urinary bladder
+  carotid artery
+    common carotid artery
+    internal carotid artery
+    left carotid artery
+      left common carotid artery
+      left internal carotid artery
+    right carotid artery
+      right common carotid artery
+      right internal carotid artery
+  iliac artery
+  iliac vena
+  iliac vein
+  left iliac artery
+  left iliac vena
+  right iliac artery
+  right iliac vena
+  inferior vena cava
+  internal jugular vein
+  larynx
+    larynx glottis
+    larynx supraglottis
+  muscle
