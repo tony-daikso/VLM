@@ -630,7 +630,7 @@ Step 2 的 F1 偏低，多半是寫法不同：多器官合寫的句子（`The v
 
 ### 全量執行
 
-- 範圍：abdomen + chest，共 **600,881 份**，順序 abdomen → chest。2026-10-02 05:15 開始，實測 0.97 份/秒，**ETA 約 171 小時（約 10/9 完成）**。
+- 範圍：abdomen + chest，共 **600,881 份**，順序 abdomen → chest。2026-10-02 05:16 開始，**2026-10-09 11:54 完成**（約 7 天，平均 0.93–0.97 份/秒）。全程沒有自動重啟，300 批檢查全部 OK。
 - 進度：每完成一批（2,000 份，約 35 分鐘）寫入 `radar_preprocess/cg_report_combined.jsonl`，一份報告一行：`{"pid", "report", "result": {organ: {description, status}}}`。`result` 只列出 yes 的器官，`null` 表示重試後仍失敗。
 - 官方格式的三個 JSON 在全部跑完時才寫出。中途想取得目前結果可執行下面的指令；它只讀 jsonl，不影響正在跑的程式：
 
@@ -639,7 +639,7 @@ cd /datadrive/VLM/data/CT/CG/radar_preprocess/scripts
 python3 radar_llm_preprocess_combined.py --finalize-only
 ```
 
-- 看進度：`tail logs/full.log`（已完成份數與 ETA）、`logs/watchdog.log`（自動重啟紀錄）、`logs/check_batch.log`（每批檢查結果）。
+- 看進度：`scripts/status.sh` 一次列出進度與 ETA、程式與 watchdog 是否在跑、重啟紀錄、每批檢查結果。原始 log 在 `logs/full.log`、`logs/watchdog.log`、`logs/check_batch.log`。
 
 **每批檢查**（`scripts/check_batch.py`，每完成一批 2,000 份就檢查一次，結果記在 `logs/check_batch.log`）。正常的批次標 `OK`；任何一項超出範圍就標 `WARN`，並附上例子：
 
@@ -665,6 +665,43 @@ cd /datadrive/VLM/data/CT/CG/radar_preprocess/scripts && (setsid nohup ./watchdo
 ```
 
 - 寫到一半斷掉留下的半行，讀取時會略過；重新開始寫入前會先補換行，避免下一筆接在同一行而遺失。
+
+### 最終結果（2026-10-09）
+
+輸出在 `radar_preprocess/`，格式同官方：
+
+| 檔案 | 份數 | 大小 |
+|---|---|---|
+| `cg_report_mention.json`（Step 1） | 600,881 | 891 MB |
+| `cg_report_organ_report.json`（Step 2） | 600,880 | 925 MB |
+| `cg_report_organ_normal.json`（Step 3） | 600,880 | 658 MB |
+
+- 檢查：每份 Step 1 都有 26 個器官；Step 1 = yes 的器官集合與 Step 2、3 完全一致。
+- 失敗 1 份：`CG0306396`（abdomen），輸出到 token 上限仍沒寫完，重試也一樣，Step 1 記為 `未处理成功：...`，Step 2、3 沒有這份。訓練時略過或當成全部 normal。
+- 159 個器官的描述是模型自己的說明（`(Note: the report ...)`），已在 finalize 時改判為未提及（佔全部約 375 萬個器官的 0.004%）。
+- 平均 yes / 份：abdomen 6.80、chest 5.27。器官總數 normal 1,994,174、abnormal 1,758,445。
+
+各器官被提及的比例與 abnormal 比例：
+
+| 器官 | 提及 | abnormal | 器官 | 提及 | abnormal |
+|---|---|---|---|---|---|
+| liver | 82.9% | 64.2% | aorta | 18.2% | 67.7% |
+| lung | 76.9% | 66.3% | heart | 16.8% | 63.2% |
+| kidney | 66.6% | 51.6% | bladder | 14.6% | 35.6% |
+| spleen | 64.3% | 25.8% | thoracic vertebrae | 11.8% | 95.1% |
+| pancreas | 58.5% | 8.8% | stomach | 10.6% | 57.0% |
+| adrenal gland | 47.4% | 8.1% | small bowel | 9.5% | 54.4% |
+| gallbladder | 38.4% | 45.8% | esophagus | 6.7% | 82.1% |
+| portal vein | 31.0% | 25.8% | pulmonary artery | 6.1% | 24.4% |
+| large bowel | 19.8% | 66.9% | duodenum | 5.7% | 46.5% |
+| lumbar vertebrae | 19.0% | 89.9% | trachea | 5.0% | 46.6% |
+| iliac artery | 4.1% | 97.5% | rib | 3.9% | 73.0% |
+| inferior vena cava | 3.6% | 31.4% | sacrum | 1.6% | 69.0% |
+| cervical vertebrae | 0.9% | 68.1% | iliac vena | 0.4% | 80.7% |
+
+脊椎、iliac artery、esophagus 的 abnormal 比例很高：在嚴格規則下，報告通常只有在描述病變（退化、鈣化等）時才會點名這些器官，所以被提及時多半是異常。
+
+**備份**：報告、jsonl 與輸出 JSON 都含報告原文，只放在 `/datadrive`（不進 git）。模型（`/root/models`，29 GB）、conda env `vllm`（12 GB）放在 container 裡，container 被刪除時需依「環境」一節重新下載、安裝。
 
 ### 限制與待辦
 

@@ -1,10 +1,12 @@
 #!/bin/bash
 # Restart run_full.sh if it dies before finishing (max 20 restarts). Once the run exits
 # with code 0 (all reports done), rebuilds the final json with --finalize-only and stops.
+# Also runs check_batch.py every minute (results in logs/check_batch.log).
 cd /datadrive/VLM/data/CT/CG/radar_preprocess/scripts
 n=0
 while true; do
   sleep 60
+  python3 check_batch.py > /dev/null 2>&1  # per-batch sanity check -> logs/check_batch.log
   pgrep -f "^python radar_llm_preprocess_combined" >/dev/null && continue
   last=$(grep -E "^EXIT" ../logs/full.log | tail -1)
   if [ "$last" = "EXIT 0" ]; then
