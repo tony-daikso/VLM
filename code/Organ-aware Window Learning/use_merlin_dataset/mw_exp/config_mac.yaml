@@ -1,0 +1,25 @@
+# All paths are on the A6000 host (root: ~/Desktop/Tony/VLM/OWL)
+ct_dir: '/Volumes/My Passport/Tony/VLM/data/CT/merlin/merlin_data'
+labels_file: /home/advantech/Desktop/Tony/VLM/OWL/data/labels_disease14.csv # built by src/make_labels.py
+split_file: /home/advantech/Desktop/Tony/VLM/OWL/data/split.csv            # Merlin official split (patient-wise)
+mask_source: totalsegmentator   # or: custom
+mask_dir: null                  # used when mask_source=custom
+ts_task: total
+ts_fast: true                   # user choice (2026-11-04): TotalSegmentator --fast, single 3mm model (Dataset297)
+ts_model_dir: /Users/tony.tu/.totalsegmentator/nnunet/results/Dataset297_TotalSegmentator_total_3mm_1559subj/nnUNetTrainer_4000epochs_NoMirroring__nnUNetPlans__3d_fullres
+output_dir: /Users/tony.tu/OWL_mac/outputs
+subset_size: null              # full run; pilot used 60
+device: mps
+amp: true
+seed: 42
+
+organ_map_file: organ_map.yaml
+windows_file: windows.yaml
+finding_map_file: finding_organ_map.yaml
+
+# patching / pooling
+stages_used: [1, 2, 3]          # see MODEL_NOTES.md
+min_organ_voxels: 100           # on the 3mm grid; below -> missing
+min_stage_weight: 1.0           # sum of fractional mask weight at a stage; below -> bbox fallback
+tile_overlap: 0.25
+pad_hu: -1024

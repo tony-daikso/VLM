@@ -1,0 +1,21 @@
+# Exp G (2026-11-05): rib-level units for the fracture study (src/extract_bones.py --organ-map organ_map_ribs.yaml --emb-subdir emb_ribs)
+# Data check (40 train masks, TS total 3 mm): ribs 1-4 present (>=100 vox) in 0-15% of abdominal CTs -> merged per side;
+# ribs 5-12 present 53-97%, median 125-565 vox (rib 5/12 ~125-160) -> single-rib units.
+rib_left_1_4: [rib_left_1, rib_left_2, rib_left_3, rib_left_4]
+rib_left_5: [rib_left_5]
+rib_left_6: [rib_left_6]
+rib_left_7: [rib_left_7]
+rib_left_8: [rib_left_8]
+rib_left_9: [rib_left_9]
+rib_left_10: [rib_left_10]
+rib_left_11: [rib_left_11]
+rib_left_12: [rib_left_12]
+rib_right_1_4: [rib_right_1, rib_right_2, rib_right_3, rib_right_4]
+rib_right_5: [rib_right_5]
+rib_right_6: [rib_right_6]
+rib_right_7: [rib_right_7]
+rib_right_8: [rib_right_8]
+rib_right_9: [rib_right_9]
+rib_right_10: [rib_right_10]
+rib_right_11: [rib_right_11]
+rib_right_12: [rib_right_12]

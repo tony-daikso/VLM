@@ -1,0 +1,28 @@
+# Spark finetune config (method 2, src/finetune.py); reads prep/patches from Spark outputs
+ct_dir: /home/daikso_spark/OWL/data/ct
+labels_file: /home/daikso_spark/OWL/data_ft/labels_disease14.csv
+split_file: /home/daikso_spark/OWL/data_ft/split.csv
+mask_source: totalsegmentator   # or: custom
+mask_dir: null                  # used when mask_source=custom
+ts_task: total
+ts_fast: true                   # user choice (2026-11-04): TotalSegmentator --fast, single 3mm model (Dataset297)
+ts_model_dir: /home/daikso_spark/.totalsegmentator/nnunet/results/Dataset297_TotalSegmentator_total_3mm_1559subj/nnUNetTrainer_4000epochs_NoMirroring__nnUNetPlans__3d_fullres
+output_dir: /home/daikso_spark/OWL/mw_exp/outputs
+subset_size: null              # full run; pilot used 60
+device: cuda
+amp: true
+seed: 42
+
+organ_map_file: organ_map.yaml
+windows_file: windows.yaml
+finding_map_file: finding_organ_map.yaml
+
+# patching / pooling
+stages_used: [1, 2, 3]          # see MODEL_NOTES.md
+min_organ_voxels: 100           # on the 3mm grid; below -> missing
+min_stage_weight: 1.0           # sum of fractional mask weight at a stage; below -> bbox fallback
+tile_overlap: 0.25
+pad_hu: -1024
+extract_tiles_per_batch: 1
+metadata_file: /home/daikso_spark/OWL/data_ft/metadata.csv
+cudnn_benchmark: true

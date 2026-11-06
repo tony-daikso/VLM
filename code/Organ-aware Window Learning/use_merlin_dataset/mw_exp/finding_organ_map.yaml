@@ -1,0 +1,21 @@
+# DRAFT — needs user confirmation before the full run.
+# label source: Qwen disease14 labels (merlin_disease14/labels_a6000.jsonl)
+# organs: list of units from organ_map.yaml; with >1 unit the probe uses the mean of present units' embeddings
+hepatic_steatosis:              {organs: [liver], low_contrast: false, control: density}
+surgically_absent_gallbladder:  {organs: [gallbladder], low_contrast: false, control: structure}
+splenomegaly:                   {organs: [spleen], low_contrast: false, control: none}
+gallstones:                     {organs: [gallbladder], low_contrast: true, control: none}
+biliary_ductal_dilation:        {organs: [liver, pancreas], low_contrast: true, control: none}
+hydronephrosis:                 {organs: [kidney_left, kidney_right], low_contrast: false, control: none}
+abdominal_aortic_aneurysm:      {organs: [aorta], low_contrast: false, control: none}
+atherosclerosis:                {organs: [aorta], low_contrast: false, control: none}
+osteopenia:                     {organs: [lumbar_spine], low_contrast: true, control: none}
+# exp B (2026-11-05): fracture moved from [lumbar_spine] to the 17 bone units, site-wise MIL max (probe.py agg: max)
+fracture:                       {organs: [T8, T9, T10, T11, T12, L1, L2, L3, L4, L5, ribs_left, ribs_right, sacrum, hip_left, hip_right, femur_left, femur_right],
+                                 low_contrast: true, control: none, agg: max,
+                                 sites: {vertebra: [T8, T9, T10, T11, T12, L1, L2, L3, L4, L5], rib: [ribs_left, ribs_right],
+                                         pelvic: [sacrum, hip_left, hip_right, femur_left, femur_right]}}
+bowel_obstruction:              {organs: [small_bowel, colon], low_contrast: false, control: none}
+appendicitis:                   {organs: [colon], low_contrast: true, control: none}
+ascites:                        {organs: [liver, spleen], low_contrast: false, control: none}
+free_air:                       {organs: [small_bowel, colon, stomach], low_contrast: true, control: none}

@@ -1,0 +1,16 @@
+# HU windows. 'baseline' = native nnU-Net CTNormalization (no level/width).
+windows:
+  baseline: {type: baseline}
+  soft_tissue: {level: 40, width: 400}
+  liver: {level: 60, width: 150}
+  narrow_abd: {level: 40, width: 250}
+  bone: {level: 400, width: 1800}
+# E4 fixed preset (radiologist convention): unit -> window
+presets:
+  default: soft_tissue
+  liver: liver
+  pancreas: narrow_abd
+  kidney_left: narrow_abd
+  kidney_right: narrow_abd
+  adrenal: narrow_abd
+  lumbar_spine: bone

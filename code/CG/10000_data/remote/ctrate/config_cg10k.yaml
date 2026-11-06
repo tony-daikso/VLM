@@ -1,0 +1,24 @@
+# CG10k OWL inference on CT-rate (2026-11-05). Same extraction settings as A6000 mw_exp/config_final.yaml (E3_late expB).
+# organ_map.yaml here = mw_exp/organ_map_preB.yaml (12 main units, as used for outputs_final/emb);
+# bone units = organ_map_bones.yaml (17 units, extract_bones.py). Output dir is overridden per set by src/cg10k_run.py.
+ct_dir: /media/daikso/CTDATA/cg10k/nifti_3mm
+mask_source: totalsegmentator
+mask_dir: null
+ts_task: total
+ts_fast: true
+ts_model_dir: /home/daikso/.totalsegmentator/nnunet/results/Dataset297_TotalSegmentator_total_3mm_1559subj/nnUNetTrainer_4000epochs_NoMirroring__nnUNetPlans__3d_fullres
+output_dir: /media/daikso/CTDATA/cg10k/owl/main
+subset_size: null
+device: cuda
+amp: true
+seed: 42
+organ_map_file: organ_map.yaml
+windows_file: windows.yaml
+finding_map_file: finding_organ_map.yaml
+stages_used: [1, 2, 3]
+min_organ_voxels: 100
+min_stage_weight: 1.0
+tile_overlap: 0.25
+pad_hu: -1024
+extract_tiles_per_batch: 1
+cudnn_benchmark: false

@@ -1,0 +1,13 @@
+# anatomical unit -> list of TotalSegmentator 'total' class names (or custom label names)
+liver: [liver]
+spleen: [spleen]
+pancreas: [pancreas]
+kidney_left: [kidney_left]
+kidney_right: [kidney_right]
+gallbladder: [gallbladder]
+stomach: [stomach]
+adrenal: [adrenal_gland_left, adrenal_gland_right]
+aorta: [aorta]
+small_bowel: [small_bowel, duodenum]
+colon: [colon]
+lumbar_spine: [vertebrae_L1, vertebrae_L2, vertebrae_L3, vertebrae_L4, vertebrae_L5]
