@@ -2,9 +2,10 @@
 """Method 1, step S1: sentence bank from TRAIN physician sentences only.
 
 Source of physician sentences (per study x disease, with polarity):
-  * preferred: agent B's cleaned targets (report_gen/targets/, adapter `load_targets`), once they exist;
-  * fallback (provisional): the `quotes` of labels_disease14.jsonl (verbatim report sentences chosen by the same Qwen
-    run that produced the labels), whitespace-normalised. Test rows are never parsed.
+  * default: agent B's cleaned TRAIN targets, compacted on A6000 by m1_extract_targets.py
+    (usage: python m1_bank.py <bank_src_train.jsonl>); status pos -> pos, neg -> neg, uncertain/not_mentioned -> None;
+    silent-negative rate = neg / (neg + not_mentioned) over train targets;
+  * fallback (no argument): the `quotes` of labels_disease14.jsonl (train rows only), silent rate from labels.
 
 Merlin reports are organ-sectioned and radiologists usually state negatives at organ level (a "<organ header>: normal"
 style sentence), often one sentence covering two of the 14 diseases (e.g. one disease present, its partner absent).
@@ -46,9 +47,12 @@ KW = {"hepatic_steatosis": r"steatosis|fatty", "surgically_absent_gallbladder": 
 BAD = re.compile(r"\d|\bstable\b|\bprior\b|previous|compared|comparison|interval|\bnew\b|newly|unchanged|again|\bknown\b|"
                  r"redemonstrat|persist|increas|decreas|improv|resolv|progress|\bse\b|\bim\b|series|image|\bsee\b", re.I)
 SIDE_GRADE = re.compile(r"\bleft\b|\bright\b|bilateral|\bmild|moderate|severe|marked|\bsmall\b|\blarge\b|trace|minimal|"
-                        r"\bslight|massive|\bL\d|\bT\d|\brib|vertebra|sacr|pelvi|\bhip\b|femur|focal|diffuse", re.I)
+                        r"\bslight|massive|\bL\d|\bT\d|\brib|vertebra|sacr|pelvi|\bhip\b|femur|focal|diffuse|"
+                        r"intrahepatic|extrahepatic|common bile duct|\bcbd\b|infrarenal|small bowel|large bowel|colon", re.I)
 NEGWORD = re.compile(r"\bno\b|\bnot\b|without|normal|unremarkable|patent", re.I)
 HEADER_NORMAL = re.compile(r"^[A-Za-z ,/]+: (normal|patent|unremarkable)\.?$", re.I)
+# leftovers of size removal in the cleaned targets ("... measures up.") are not usable as template sentences
+FRAGMENT = re.compile(r"measur|\bup\.$|\bto\.$|\bof\.$", re.I)
 MIN_JOINT, MIN_SINGLE, SILENT_RATE = 20, 20, 0.20
 # generic positive sentences (no side/grade/site) used when train has no attribute-free positive sentence seen >= 20x
 FALLBACK_POS = {"hydronephrosis": "Hydronephrosis.", "abdominal_aortic_aneurysm": "Abdominal aortic aneurysm.",
@@ -73,9 +77,8 @@ def key(s):
 
 def load_quotes():
     """{study_id: {disease: (polarity, [sentences])}} for train only. polarity: pos / neg / None."""
-    tgt = ROOT / "targets"
-    if (tgt / "USE_FOR_BANK").exists():                     # adapter switched on once B's format is checked
-        return load_targets(tgt)
+    if len(sys.argv) > 1:
+        return load_targets(sys.argv[1])
     out = {}
     for line in open(LABELS):
         sp = line[line.index('"split": "') + 10:].split('"', 1)[0]
@@ -89,17 +92,31 @@ def load_quotes():
     return out
 
 
-def load_targets(tgt):
-    raise NotImplementedError("fill in once targets/ format is known")
+def load_targets(path):
+    out = {}
+    for line in open(path):
+        r = json.loads(line)
+        out[r["case_id"]] = {d: ({"pos": "pos", "neg": "neg"}.get(r["d"][d][0]), [norm(x) for x in r["d"][d][1]]) for d in D14}
+    return out
 
 
 def main():
     Q = load_quotes()
-    L = load_labels(("train",))
-    silent = {}
+    silent, rates = {}, {}
+    if len(sys.argv) > 1:                       # explicit-negative rate from B's statuses (strict not_mentioned)
+        st = collections.defaultdict(collections.Counter)
+        for line in open(sys.argv[1]):
+            r = json.loads(line)
+            for d in D14:
+                st[d][r["d"][d][0]] += 1
+        for d in D14:
+            rates[d] = st[d]["neg"] / max(st[d]["neg"] + st[d]["not_mentioned"], 1)
+    else:
+        L = load_labels(("train",))
+        for d in D14:
+            a, b = defa(L[d]), defb(L[d]); rates[d] = float((b == 0).sum() / max((a == 0).sum(), 1))
     for d in D14:
-        a, b = defa(L[d]), defb(L[d])
-        rate = float((b == 0).sum() / max((a == 0).sum(), 1)); silent[d] = rate < SILENT_RATE
+        silent[d] = rates[d] < SILENT_RATE
     # single-disease sentences
     single = {}
     for d in D14:
@@ -112,7 +129,7 @@ def main():
                 for s in ss:
                     if BAD.search(s) or not re.search(KW[d], s, re.I):
                         continue
-                    if pol == "pos" and (SIDE_GRADE.search(s) or NEGWORD.search(s)):
+                    if pol == "pos" and (SIDE_GRADE.search(s) or NEGWORD.search(s) or FRAGMENT.search(s)):
                         continue
                     if pol == "neg" and not NEGWORD.search(s):
                         continue
@@ -145,17 +162,17 @@ def main():
                 s = next(x for x in q[act[0]][1] if key(x) == k)
                 if BAD.search(s):
                     continue
-                if any(p.endswith(":pos") for p in pols) and SIDE_GRADE.search(s):
+                if any(p.endswith(":pos") for p in pols) and (SIDE_GRADE.search(s) or HEADER_NORMAL.match(s) or FRAGMENT.search(s)):
                     continue
                 combos[pols][k] += 1; surf.setdefault(k, collections.Counter())[s] += 1
         for pols, c in combos.items():
             top = [(surf[k].most_common(1)[0][0], n) for k, n in c.most_common(5)]
             if top and top[0][1] >= MIN_JOINT:
                 joint[(g, pols)] = top
-    bank = dict(groups=GROUPS, silent_negative={d: bool(v) for d, v in silent.items()},
+    bank = dict(groups=GROUPS, silent_negative={d: bool(v) for d, v in silent.items()}, explicit_neg_rate=rates,
                 single={f"{d}|{p}": v for (d, p), v in single.items()},
                 joint={f"{g}|{','.join(p)}": v for (g, p), v in joint.items()},
-                source="labels_disease14 quotes (provisional)" if not (ROOT / "targets" / "USE_FOR_BANK").exists() else "targets/")
+                source="agent B targets (train)" if len(sys.argv) > 1 else "labels_disease14 quotes (train)")
     json.dump(bank, open(OUT / "sentence_bank.json", "w"), indent=1, ensure_ascii=False)
     rows = []
     for (d, p), v in single.items():
