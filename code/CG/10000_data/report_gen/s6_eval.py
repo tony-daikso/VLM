@@ -115,7 +115,7 @@ def main():
         else:
             ypos, yneg = rc.isin(POS).values, rc.isin(NEG_EXPLICIT).values
         dneg = E[k].astype(str).isin(NEG_EXPLICIT).values
-        aneg = T[f"{k}_rendered"].values == "neg"
+        aneg = np.isin(T[f"{k}_rendered"].values, ["neg", "implied_neg"])  # implied: S/P cholecystectomy written, no GB
         crit, crit_a = int((ypos & dneg).sum()), int((ypos & aneg).sum())
         tot_pos += int(ypos.sum())
         tot_crit += crit
