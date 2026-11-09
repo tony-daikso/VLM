@@ -97,12 +97,13 @@ def parse_report(report, vocab):
     rep = report.replace("\r", "")
     # impression start: 'IMPRESSION:' header or the first newline (numbered impression list)
     m = re.search(r"(?:^|\s)(?:IMPRESSION|Impression|CONCLUSION|Conclusion)S?\s*:", rep)
-    if m:
-        imp_start = m.start()
+    m1 = re.search(r"\n\s*1\s*[.)]", rep)
+    cands = [x.start() for x in (m, m1) if x]
+    if cands:
+        imp_start = min(cands)
     else:
-        m1 = re.search(r"\n\s*1\s*[.)]", rep)
         nl = rep.find("\n")
-        imp_start = m1.start() if m1 else (nl if nl >= 0 else len(rep))
+        imp_start = nl if nl >= 0 else len(rep)
     findings, imp = rep[:imp_start], rep[imp_start:]
     items = []
     # ---- findings: split on accepted headers
@@ -126,6 +127,7 @@ def parse_report(report, vocab):
             items.append(dict(part="findings", sec=sec, grps=grps, text=s, first=(j == 0)))
     # ---- impression: numbered lines, then sentences
     imp = re.sub(r"^\s*(?:IMPRESSION|Impression|CONCLUSION|Conclusion)S?\s*:", "", imp.strip())
+    findings = re.sub(r"[\s:]+$", " ", findings)
     for line in re.split(r"\n+", imp):
         line = NUM_PREFIX.sub("", line.strip())
         if not line:
@@ -227,7 +229,7 @@ POST_WITHOUT = {"biliary_ductal_dilation": R(r"^[^.;]{0,30}?\bwithout\s+(?:evide
                 "abdominal_aortic_aneurysm": R(r"^[^.;]{0,30}?\bwithout\s+(?:evidence\s+of\s+)?(?:aneurysm|dilat|enlarg)")}
 BLANKET_SENT = R(r"^(?:(?:is|are|appears?)\s+)?(?:grossly\s+|otherwise\s+|essentially\s+|largely\s+)?(?:normal|unremarkable|within\s+normal\s+limits|"
                  r"no\s+(?:acute\s+|significant\s+|focal\s+)?(?:abnormalit\w*|findings?|pathology)|negative|clear|intact|wnl|not\s+enlarged|"
-                 r"normal\s+(?:in\s+)?size)\b[^.;]{0,30}\.?$")
+                 r"normal\s+(?:in\s+)?size)\b(?![^.;]{0,30}(?:stomach|esophag|appendix|duoden|diverticul|pancrea|adrenal))[^.;]{0,30}\.?$")
 NORMAL_PRED = R(r"\b(?:is|are|appears?|appear|otherwise|remain)\s+(?:grossly\s+|otherwise\s+|essentially\s+)?(?:normal|unremarkable)\b|\bunremarkable\b|^normal\b|\bwithin\s+normal\s+limits")
 
 # section groups whose blanket normal covers a disease (Merlin label prompt: liver/biliary normal covers steatosis + biliary;
@@ -345,6 +347,13 @@ def sent_status(d, it):
         spans = [s for s in spans if not re.search(r"(?:catheter|stent|lead|wire)", t[s[0]:s[1] + 25], re.I)]
     if d == "atherosclerosis" and spans:
         spans = [s for s in spans if not (t[s[0]:s[1]].lower().startswith("plaque") and not re.search(r"aort|iliac|arter|vascul|vessel|calcif|atheros", t, re.I))]
+    if d == "abdominal_aortic_aneurysm" and spans and not re.search(r"aort|\bAAA\b|aneurysm|EVAR|endograft", t, re.I):
+        spans = []
+    if d == "abdominal_aortic_aneurysm" and spans and re.search(r"\bnode|nodal|conglomerate|encas", t, re.I) and not re.search(r"aneurysm|\bAAA\b", t, re.I):
+        spans = []
+    if d == "biliary_ductal_dilation" and spans and re.search(r"pancrea", t, re.I) and \
+            not re.search(r"\bbil|bile|\bCBD|common\s+duct|hepatic\s+duct|intrahepatic", t, re.I):
+        spans = []
     if d == "biliary_ductal_dilation" and spans:
         spans = [s for s in spans if not re.search(r"pancreatic\s+duct|main\s+pancreatic|\bPD\b|duct\s+of\s+wirsung|ureter|thoracic\s+duct|lactiferous",
                                                   t[max(0, s[0] - 25):s[1] + 5], re.I)]
@@ -547,8 +556,8 @@ CAT2STATUS = {"yes": "pos", "probably_yes": "pos", "unclear": "uncertain", "prob
 # ------------------------------------------------------------------ cleaning
 KEEP_STATUS = (r"(?:stable|stably|stability|stationary|unchanged|unchanging|persistent(?:ly)?|persists?|persisted|persisting|"
                r"redemonstrat\w*|re-demonstrat\w*|again\s+(?:seen|noted|shown|demonstrated|visualized|identified)|"
-               r"again|still|known|previously\s+(?:seen|noted|described|demonstrated|identified)|similar(?:ly)?|"
-               r"re-?identified|continued|continues\s+to\s+be|remains?|grossly\s+unchanged)")
+               r"again|still|known|previously\s+(?:seen|noted|described|demonstrated|identified)|"
+               r"re-?identified|grossly\s+unchanged)")
 DATE = r"(?:<DATE>|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}|(?:19|20)\d{2})"
 PRIOR = r"(?:the\s+)?(?:most\s+recent\s+|recent\s+|patient's\s+)?(?:prior|previous|preceding|last|earlier|outside|comparison|old|initial|baseline)"
 STUDY = r"(?:\w+\s+){0,3}?(?:study|studies|exam\w*|CT|CTs|MRI?|imaging|scan\w*|ultrasound|US|PET(?:/CT)?|radiograph\w*|film\w*|images?|CTA|evaluation)"
@@ -572,7 +581,9 @@ CHANGE_WORD = re.compile(r"\b(?:(?:interval(?:ly)?\s+)?(?:increas\w*|decreas\w*|
                          r"resolv\w*|resolution|disappear\w*|new|newly|enlarging|enlarged\s+since|growing|grown|shrink\w*|"
                          r"(?:smaller|larger|bigger|more|less)\s+(?:than|compared)|worse\w*|worsen\w*|aggravat\w*|subsid\w*|"
                          r"no\s+longer|now|developing|evolving|evolution|evolved|interval\s+(?:development|placement|removal|growth|enlargement|change))\b|->|→", re.I)
-KEEP_RE = re.compile(r"\b" + KEEP_STATUS + r"\b[,]?\s*", re.I)
+KEEP_RE = re.compile(r"\b" + KEEP_STATUS + r"\b\s*", re.I)
+COPULA_KEEP = re.compile(r"\s+(?:is|are|was|were)\s+(?:(?:again|still|re-?)\s*(?:seen|noted|demonstrated|visualized|identified|redemonstrated|present)|"
+                         r"unchanged|stable|stationary|persistent|redemonstrated|similar(?:\s+in\s+(?:size|appearance))?)\b", re.I)
 
 # se/im references: parenthesised series/image numbers in several notations
 SEIM = re.compile(r"\s*\(\s*(?:(?:series|se|image|images|im|img|axial|coronal|sagittal|cor|sag|ax)\b\.?\s*:?\s*)?\d+\s*[/:]\s*\d+[^()]*\)"
@@ -580,11 +591,13 @@ SEIM = re.compile(r"\s*\(\s*(?:(?:series|se|image|images|im|img|axial|coronal|sa
                   r"|\s*\(\s*(?:image|images|im|img)s?\s*\.?\s*:?\s*\d+[^()]*\)"
                   r"|,?\s*\b(?:on\s+|at\s+|see\s+)?(?:series|se)\s*\.?\s*:?\s*\d+\s*,?\s*(?:image|images|im|img)s?\s*\.?\s*:?\s*\d+(?:\s*(?:-|through|to|and|,)\s*\d+)*"
                   r"|,?\s*\b(?:on\s+|at\s+)?(?:image|images)\s+\d+(?:\s*(?:-|through|to|and|,)\s*\d+)*\s+(?:of|on)\s+series\s+\d+"
-                  r"|\s*\(\s*\d+\s*-\s*\d+\s*\)", re.I)
+                  r"|\s*\(\s*\d+\s*-\s*\d+\s*\)"
+                  r"|\s*\(\s*(?:<TIME>)?\d+[\d\s,;:/\-]*\)|\s*\(\s*<TIME>\s*\d*\s*\)", re.I)
 SIZE_NUM = r"\d+(?:\.\d+)?(?:\s*(?:-|to)\s*\d+(?:\.\d+)?)?"
 SIZE = re.compile(SIZE_NUM + r"(?:\s*x\s*" + SIZE_NUM + r")*\s*-?\s*(?:mm|cm|millimeters?|centimeters?)\b", re.I)
 # size wording to remove when unmeasured (order matters)
 SIZE_PHRASES = [
+    re.compile(r"\s*\b(?:to|of|at)\s+(?:approximately\s+|about\s+|up\s+to\s+)?" + SIZE.pattern + r"(?:\s+in\s+(?:diameter|size|caliber|length))?", re.I),
     re.compile(r"\s*\(\s*(?:up\s+to\s+|approximately\s+|about\s+|measuring\s+)?" + SIZE.pattern + r"[^()]{0,30}\)", re.I),
     re.compile(r",?\s*(?:which\s+|that\s+)?(?:measuring|measures?|measured)\s+(?:up\s+to\s+|approximately\s+|about\s+|at\s+least\s+|roughly\s+|nearly\s+|"
                r"at\s+most\s+|less\s+than\s+|greater\s+than\s+|over\s+)?" + SIZE.pattern + r"(?:\s+(?:in\s+)?(?:greatest\s+|maximal\s+|maximum\s+|short\s+axis\s+|long\s+axis\s+)?"
@@ -601,6 +614,7 @@ TEMPORAL_LEFT = re.compile(r"\b(?:stable|stationary|unchanged|interval|progress\
 
 
 def _tidy(t):
+    t = re.sub(r"[\s:]+$", "", t)
     t = re.sub(r"\s{2,}", " ", t)
     t = re.sub(r"\(\s*\)", "", t)
     t = re.sub(r"\s+([.,;:)])", r"\1", t)
@@ -636,7 +650,9 @@ def strip_temporal(s, log):
     if t2 != t:
         log["keep_word"] += 1
         t = t2
-    t2 = KEEP_RE.sub("", t)
+    t2 = COPULA_KEEP.sub("", t)
+    t2 = re.sub(r"^(?:there\s+(?:has|have)\s+been\s+)?(?:interval\s+)?(?:development|appearance)\s+of\s+(?:the\s+)?", "", t2, flags=re.I)
+    t2 = KEEP_RE.sub("", t2)
     if t2 != t:
         log["keep_word"] += 1
         t = t2
@@ -645,9 +661,9 @@ def strip_temporal(s, log):
     if CHANGE_WORD.search(t):
         t2 = re.sub(r"^(?:(?:interval(?:ly)?|slight(?:ly)?|mild(?:ly)?|minimal(?:ly)?|significant(?:ly)?|marked(?:ly)?)\s+)?"
                     r"(?:new(?:ly)?|increas\w*|decreas\w*|improv\w*|worsen\w*|enlarging|progressive|progressing|developing|evolving)\s+"
-                    r"(?:(?:in|of)\s+(?:the\s+)?(?:size|amount|degree|extent|volume|number)\s+(?:of\s+)?(?:the\s+)?)?", "", t, flags=re.I)
-        t2 = re.sub(r"\b(?:interval|slight|mild|significant|marked)?\s*(?:increase|decrease|improvement|worsening|progression|regression|reduction)\s+"
-                    r"(?:in|of)\s+(?:the\s+)?(?:size|amount|degree|extent|volume|number|caliber)?\s*(?:of\s+)?(?:the\s+)?", "", t2, flags=re.I)
+                    r"(?:(?:in|of)\s+(?:the\s+)?(?:(?:size|amount|degree|extent|volume|number)\s+(?:of\s+)?(?:the\s+)?)?)?", "", t, flags=re.I)
+        t2 = re.sub(r"\b(?:(?:interval|slight|mild|minimal|significant|marked|further|minor)\s+)*(?:increase|decrease|improvement|worsening|progression|regression|reduction)\s+"
+                    r"(?:in|of)\s+(?:the\s+)?(?:(?:size|amount|degree|extent|volume|number|caliber)\s+)?(?:of\s+)?(?:the\s+)?", "", t2, flags=re.I)
         t2 = re.sub(r",?\s*\b(?:now|currently)\s+(?=measur)", " ", t2, flags=re.I)
         t2 = re.sub(r"\b(?:new|newly)\s+(?=\w)", "", t2, flags=re.I)
         t2 = re.sub(r"\b(?:has|have)\s+(?:slightly\s+|mildly\s+|minimally\s+)?(?:increased|decreased|improved|progressed|worsened|enlarged|regressed)\s+(?:in\s+(?:size|extent|amount))?", "", t2, flags=re.I)
@@ -673,6 +689,7 @@ def strip_temporal(s, log):
 
 def strip_seim(t, log):
     t2 = SEIM.sub("", t)
+    t2 = re.sub(r"\s*\([^()]*<DATE>[^()]*\)", "", t2)
     if t2 != t:
         log["seim"] += 1
     return t2
@@ -694,6 +711,20 @@ def strip_sizes(t, diseases, log):
     return t2
 
 
+DEGRADED = re.compile(r"^(?:and|or|but|which|with|distal\s+to\s+which|having|than|while)\b|\b(?:to|of|at|measuring)\s*[,;]|\bto\s+with\b|\b(?:the|a|an)\s+(?:and|or|with|in)\b", re.I)
+
+
+def degraded(raw, clean):
+    """rule cleaning produced an unusable/meaning-losing fragment (candidate for a Qwen rewrite)."""
+    if clean is None:
+        return True
+    body = re.sub(r"^[A-Z][A-Za-z/,&\- ]{1,50}:\s*", "", clean)
+    if DEGRADED.search(body):
+        return True
+    lr = len(re.sub(r"\s", "", raw))
+    return lr > 40 and len(re.sub(r"\s", "", clean)) < 0.4 * lr
+
+
 def clean_sentence(s, diseases, typo_fix, log):
     t = strip_seim(s, log)
     t = strip_temporal(t, log)
@@ -705,6 +736,10 @@ def clean_sentence(s, diseases, typo_fix, log):
         log["typo"] += 1
         log["typo_list"].append((a, b))
     t = _tidy(t)
+    # removal left a dangling fragment -> unusable
+    if re.search(r",\s*\.$|\b(?:measures?|measuring|measured|of|to|and|with|the|a|an|in|at|from|than|by)\s*\.$", t, re.I):
+        log["broken_dropped"] += 1
+        return None
     # predicate removed entirely (only the organ noun left) -> unusable
     if re.match(r"^(?:the\s+)?(?:common\s+bile\s+duct|cbd|spleen|aorta|abdominal\s+aorta)\.?$", t, re.I):
         return None
@@ -833,8 +868,11 @@ def attributes(d, texts, status):
         a["cause"] = norm_ws(SIZE.sub("", c.group(1))).strip() if c else ""
     elif d == "abdominal_aortic_aneurysm":
         sz = []
-        for mm in re.finditer(r"[^.;]*(?:aort|aneurysm|\bAAA\b)[^.;]*", t, re.I):
-            seg = SEIM.sub("", mm.group(0))
+        for seg in re.split(r"(?<=[.;])\s+", t):
+            if not re.search(r"aort|aneurysm|\bAAA\b", seg, re.I) or \
+                    re.search(r"\bnode|nodal|mass|conglomerate|tumou?r|lesion|encas", seg, re.I):
+                continue
+            seg = SEIM.sub("", seg)
             if re.search(r"thoracic|ascending|descending|arch|iliac|splenic|renal\s+artery|femoral|popliteal|hepatic\s+artery", seg, re.I) and \
                     not re.search(r"abdominal|infrarenal|suprarenal|juxtarenal|\bAAA\b", seg, re.I):
                 continue
@@ -844,10 +882,12 @@ def attributes(d, texts, status):
         a["location"] = loc[0].lower() if loc else ""
         a["repaired"] = "yes" if re.search(r"endograft|\bEVAR\b|stent\s*-?graft|aort\w*\s+(?:stent|graft|repair)|endovascular|repair|bypass\s+graft|bifemoral\s+graft", t, re.I) else "not_stated"
     elif d == "atherosclerosis":
-        g = re.search(r"\b(mild|moderate|severe|extensive|dense|heavy|marked|scattered|minimal|advanced|significant|diffuse)\w*(?:\s+(?:to|-)\s+(moderate|severe|extensive|dense|heavy|marked))?\s+(?:\w+\s+){0,3}?(?:atheroscl|calcif|plaque|atherom)", t, re.I)
+        g = re.search(r"\b(mild|moderate|severe|extensive|dense|heavy|marked|scattered|minimal|advanced|diffuse)\w*(?:\s+(?:to|-)\s+(moderate|severe|extensive|dense|heavy|marked))?\s+(?:\w+\s+){0,3}?(?:atheroscl|calcif|plaque|atherom)", t, re.I)
         w = (g.group(2) or g.group(1)).lower() if g else ""
         a["grade"] = {"extensive": "severe", "dense": "severe", "heavy": "severe", "marked": "severe", "advanced": "severe",
-                      "significant": "severe", "minimal": "mild", "scattered": "mild"}.get(w, w if w in GRADE_ORDER else "not_stated")
+                      "minimal": "mild", "scattered": "mild"}.get(w, w if w in GRADE_ORDER else "not_stated")
+        if status not in ("pos", "uncertain"):
+            a["grade"] = "not_stated"
         vs = []
         for v, p in [("aorta", r"aort(?!o-?iliac)"), ("aortoiliac", r"aorto-?iliac"), ("iliac", r"(?<!aorto)(?<!aorto-)iliac"),
                      ("coronary", r"coronar"), ("mesenteric", r"mesenteric|SMA\b|celiac|visceral"), ("renal", r"renal\s+arter"),
