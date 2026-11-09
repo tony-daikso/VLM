@@ -1,0 +1,8 @@
+# gs15 windows: baseline, soft tissue, narrow (liver 60/150, abdomen 40/250), stone (high L), low-density (cholesterol stone)
+windows:
+  baseline: {type: baseline}
+  soft_tissue: {level: 40, width: 400}
+  liver: {level: 60, width: 150}
+  narrow_abd: {level: 40, width: 250}
+  stone: {level: 200, width: 500}
+  chol: {level: 10, width: 80}
