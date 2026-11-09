@@ -61,6 +61,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--qwen-fixes", default=None, help="jsonl {case_id, i, clean} from qwen_rewrite.py (data side)")
+    ap.add_argument("--qwen-select", default=None, help="jsonl {case_id, disease, sentences} from qwen_select.py (v3, data side)")
+    ap.add_argument("--suffix", default="", help="output file suffix, e.g. _v3")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     reps = json.load(open(f"{DATA}/disease14/reports.json"))
@@ -78,7 +80,14 @@ def main():
                   clean=collections.defaultdict(collections.Counter), clean_total=collections.Counter(),
                   typos=collections.Counter(), lines=[], chars=[], empty_target=0, unparsed_headers=0)
          for sp in ("train", "val", "test")}
-    outs = {sp: open(f"{a.out}/targets_{sp}.jsonl", "w") for sp in ("train", "val", "test")}
+    outs = {sp: open(f"{a.out}/targets_{sp}{a.suffix}.jsonl", "w") for sp in ("train", "val", "test")}
+    qsel = {}
+    if a.qwen_select and os.path.exists(a.qwen_select):
+        for l in open(a.qwen_select):
+            x = json.loads(l)
+            qsel[(x["case_id"], x["disease"])] = x
+    sel_req = open(f"{a.out}/qwen_select_requests.jsonl", "w")
+    nsel = collections.Counter()
     qfix = {}
     if a.qwen_fixes and os.path.exists(a.qwen_fixes):
         for l in open(a.qwen_fixes):
@@ -159,6 +168,46 @@ def main():
                         flags.append("label_extra_sentence_added")
                     else:
                         flags.append("label_extra_sentence")
+            # disputed class (conflict / rule other): emit a sentence-selection request; apply the Qwen selection if given
+            if status != "not_mentioned" and ("conflict" in flags or "rule_other" in flags):
+                sel_req.write(json.dumps(dict(case_id=k, split=sp, disease=d, status=status, label_category=lab["category"],
+                                              quotes=lab["quotes"]), ensure_ascii=False) + "\n")
+                q = qsel.get((k, d))
+                if q is not None:
+                    sents = []
+                    for x in q.get("sentences", []) or []:
+                        if not x:
+                            continue
+                        body = re.sub(r"^\s*[A-Z][A-Za-z/,&\-() ]{1,60}:\s*", "", x)
+                        parts = L.split_sentences(body)
+                        if len(parts) <= 1:
+                            sents.append(x)
+                            continue
+                        # a merged multi-sentence return: keep only the pieces about the finding (keyword or labeler quote)
+                        nsel["merged_split"] += 1
+                        for pc in parts:
+                            if L.KW[d].search(pc) or any(len(loose(qq)) >= 6 and loose(qq) in loose(pc) for qq in lab["quotes"]):
+                                sents.append(pc)
+                    valid = [x for x in sents if loose(re.sub(r"^\s*[A-Z][A-Za-z/,&\-() ]{1,60}:\s*", "", x)) in loose(reps[k]["report"]) or loose(x) in loose(reps[k]["report"])]
+                    nsel["invalid_sentences"] += len(sents) - len(valid)
+                    qi = locate_quotes(valid, items, vocab) if valid else []
+                    if qi:
+                        nsel["applied"] += 1
+                        if set(qi) != set(idx):
+                            nsel["changed"] += 1
+                        idx = qi
+                        src = "qwen_select"
+                        flags.append("qwen_select")
+                    elif status == "neg" and not sents:
+                        # Qwen finds no sentence about the finding: a negative class keeps no sentence (v2 ones were off-topic)
+                        nsel["neg_emptied"] += 1
+                        if idx:
+                            nsel["changed"] += 1
+                        idx = []
+                        flags.append("qwen_select_empty")
+                    else:
+                        nsel["kept_v2_empty_or_invalid"] += 1
+                        flags.append("qwen_select_kept_v2")
             find = [i for i in idx if items[i]["part"] == "findings"]
             imp = [i for i in idx if items[i]["part"] == "impression"]
             use = find if find else imp
@@ -293,6 +342,8 @@ def main():
     for f in outs.values():
         f.close()
     qreq.close()
+    sel_req.close()
+    print("qwen select:", dict(nsel))
     print("qwen rewrite candidates:", dict(nq), "fixes applied:", len(qfix))
     # stats
     js = {}
@@ -311,7 +362,7 @@ def main():
                       typos={f"{x}>{y}": v for (x, y), v in st["typos"].most_common()})
     json.dump(js, open(f"{a.out}/stats.json", "w"), ensure_ascii=False, indent=1)
     # val sample for manual audit
-    vals = [json.loads(l) for l in open(f"{a.out}/targets_val.jsonl")]
+    vals = [json.loads(l) for l in open(f"{a.out}/targets_val{a.suffix}.jsonl")]
     random.seed(20261109)
     smp = random.sample(vals, min(50, len(vals)))
     with open(f"{a.out}/sample_val50.jsonl", "w") as f:
