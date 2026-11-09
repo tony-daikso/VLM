@@ -133,8 +133,21 @@ def main():
             elif rule_stat != lab_stat:
                 status = lab_stat
                 qi = locate_quotes(lab["quotes"], items, vocab)
-                idx = sorted(set(rule_idx) | set(qi))
-                src = "rule+qwen_label" if set(qi) - set(rule_idx) else "rule"
+                sst = dict(got[d])
+                if lab_stat == "neg":
+                    # rule positive, label negative: keep the label's quoted sentences + the rule's negative sentences
+                    keep_r = [i for i in rule_idx if sst[i].startswith("neg")]
+                    flags.append("conflict_pos_to_neg")
+                elif rule_stat == "neg":
+                    # rule negative, label positive/uncertain: keep the quoted sentences + the rule's non-negative sentences
+                    keep_r = [i for i in rule_idx if not sst[i].startswith("neg")]
+                    flags.append("conflict_neg_to_pos")
+                else:   # positive <-> uncertain: both say present
+                    keep_r = rule_idx
+                idx = sorted(set(keep_r) | set(qi))
+                src = "rule+qwen_label" if set(qi) - set(keep_r) else ("rule" if keep_r else "qwen_label")
+                if set(rule_idx) - set(idx):
+                    flags.append("conflict_rule_sentence_dropped")
                 flags.append("conflict")
             else:
                 status, idx = rule_stat, rule_idx

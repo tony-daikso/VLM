@@ -212,7 +212,7 @@ EXCL = {
                            r"(?:non|un)?-?obstructing\s+(?:\w+\s+){0,3}(?:stone|calcul\w*|calculi)|obstructive\s+uropathy|"
                            r"airway|bronch\w*|gastric\s+outlet|outlet\s+obstruct\w*\s+(?:of\s+the\s+)?bladder|bladder\s+outlet|biliary|common\s+bile|vascular|venous|"
                            r"obstruct\w*\s+(?:of\s+the\s+)?(?:\w+\s+)?(?:duct|ureter|kidney|vein|artery|stent|catheter|tube))"),
-    "atherosclerosis": R(r"^(?!.*(?:aort|iliac|arteries|vascul|mesenteric|renal\s+arter|celiac|femoral|splenic\s+arter|branch|vessel)).*coronar"),
+    "atherosclerosis": R(r"^(?!.*(?:aort|iliac|(?<!coronary\s)arteries|vascul|mesenteric|renal\s+arter|celiac|femoral|splenic\s+arter|branch|vessel)).*coronar"),
     "hepatic_steatosis": R(r"(?:hypo|low)[\s-]*attenuat\w*\s+(?:lesion|mass|focus|foci|nodule|cyst|area|region|structure|collection|lesions)"),
     "appendicitis": R(r"\bappendic(?:es|ular)\b|epiploic|appendages?\b"),
     "ascites": R(r"pleural|pericardial|joint|bladder|collection\s+of\s+fluid|fluid\s+collection|fluid-filled|fluid\s+filled|bowel\s+(?:loops?\s+)?fluid"),
@@ -295,7 +295,7 @@ BELOW_CUT = {
                  r"(?:small|minimal|trace)\s+(?:amount\s+of\s+)?(?:free\s+)?fluid\s+in\s+the\s+(?:dependent\s+)?pelvis|small\s+pelvic\s+free\s+fluid|"
                  r"likely\s+physiologic)\b"),
     "abdominal_aortic_aneurysm": R(r"\b(?:ectatic|ectasia)\b(?![^.]{0,30}aneurysm(?!al\s+dilat))"),
-    "bowel_obstruction": R(r"\b(?:ileus|functional|pseudo-?obstruction|less\s+likely|unlikely|not\s+favored|without\s+(?:evidence\s+of\s+)?(?:a\s+)?(?:transition|obstruction))\b"),
+    "bowel_obstruction": R(r"\b(?:ileus|functional|pseudo-?obstruction|less\s+likely|unlikely|not\s+favored|without\s+(?:evidence\s+of\s+)?(?:a\s+)?(?:(?:clear|single|discrete|definite|focal|distinct|obvious)\s+)*(?:transition|obstruction))\b"),
     "gallstones": R(r"^(?!.*(?:stone|lith|calcul)).*sludge"),
 }
 
@@ -345,6 +345,17 @@ def sent_status(d, it):
         spans = []
     if d == "fracture" and spans:
         spans = [s for s in spans if not re.search(r"(?:catheter|stent|lead|wire)", t[s[0]:s[1] + 25], re.I)]
+        # 'wedge' only counts in a bone section or next to a bony structure (not wedge-shaped renal/hepatic areas, wedge resection)
+        bone_ctx = ("msk" in it["grps"]) or re.search(r"vertebra|spine|spinal|\b[TL]\d{1,2}\b|endplate|\bribs?\b|sacr|pelvi\w*\s+bone|femo|osseous|bony|compression", t, re.I)
+        spans = [s for s in spans if not (t[s[0]:s[1]].lower().startswith("wedg") and
+                                          (not bone_ctx or re.search(r"wedge[- ]shaped|wedge\s+resection", t[s[0]:s[1] + 15], re.I)))]
+    if d == "free_air" and spans:
+        spans = [s for s in spans if not (re.search(r"^(?:extraluminal|extraintestinal)", t[s[0]:s[1]], re.I) and
+                                          re.search(r"collection|abscess|fistula|locul|tract", t, re.I) and not re.search(r"\bfree\b|pneumoperitoneum", t, re.I))]
+    if d == "ascites" and spans:
+        spans = [s for s in spans if not re.search(r"^\W*(?:density|attenuation|collection|lesion|-filled|filled|containing)", t[s[1]:s[1] + 20], re.I)]
+        if re.search(r"\b(?:cyst|lesion|collection|abscess)s?\b", t, re.I) and not re.search(r"\bfree\s+fluid|ascites", t, re.I):
+            spans = []
     if d == "atherosclerosis" and spans:
         spans = [s for s in spans if not (t[s[0]:s[1]].lower().startswith("plaque") and not re.search(r"aort|iliac|arter|vascul|vessel|calcif|atheros", t, re.I))]
     if d == "abdominal_aortic_aneurysm" and spans and not re.search(r"aort|\bAAA\b|aneurysm|EVAR|endograft", t, re.I):
@@ -365,6 +376,7 @@ def sent_status(d, it):
         if d == "splenomegaly" and "spleen" in it["grps"] and it["first"] and SPLEEN_SMALL.search(t):
             return "neg"
         if d == "hepatic_steatosis" and "liver" in it["grps"] and re.search(r"attenuation|\bdensity|echogenicity", t, re.I) and \
+                not re.search(r"hypodensit|hyperdensit|\bcysts?\b|lesion|\bmass|nodul|fluid\s+density|\bfoc(?:us|i)\b", t, re.I) and \
                 not re.search(r"(?:attenuat\w*|dens\w*)\s+(?:\w+\s+){0,2}(?:lesion|mass|focus|foci|nodule|cyst|structure|area)|(?:lesion|mass|cyst|nodule)s?\b[^.;]{0,30}attenuat", t, re.I):
             if re.search(r"decreas|\blow\b|hypo|diminish|reduced", t, re.I):
                 return "uncertain" if HEDGE_UNCERTAIN.search(t) else "pos"
@@ -410,6 +422,14 @@ def sent_status(d, it):
             stats.append("neg")
             continue
         if HYPOTHETICAL.search(t[max(0, s0 - 60):s0]):
+            continue
+        if d != "atherosclerosis" and re.search(r"\b(?:normal|unremarkable)\b|not\s+enlarged", word, re.I):
+            stats.append("neg")
+            continue
+        if d == "abdominal_aortic_aneurysm" and re.search(r"aneurysm", word, re.I) and \
+                re.search(r"iliac|splenic|renal\s+arter|femoral|popliteal|hepatic\s+arter|thoracic|ascending|intracranial|visceral|mesenteric\s+arter|celiac", t, re.I) and \
+                not re.search(r"abdominal\s+aort\w*\s+aneurysm|aortic\s+aneurysm|infrarenal|suprarenal|juxtarenal|\bAAA\b|aneurysm\w*\s+(?:of|in)\s+the\s+(?:abdominal\s+|infrarenal\s+)?aorta", t, re.I):
+            stats.append("neg")   # aneurysm of another artery: copied, negative by definition
             continue
         if d != "appendicitis" and (re.search(r"\b(?:without|no|not)\b|non-?dilated|non-?obstruct", word, re.I) or
                                     re.search(r"(?:\bnon-?|\bun)$", t[max(0, s0 - 4):s0], re.I)):
@@ -510,6 +530,8 @@ def appendicitis_status(t):
         post = t[m.end():m.end() + 40]
         if negated(t, m.start()) or re.search(r"non-?$|noninflamed", pre, re.I) or \
                 re.search(r"^[^.;]{0,25}\b(?:less\s+likely|unlikely|not\s+favored|resolved|excluded)", post, re.I):
+            res.append("neg")
+        elif re.search(r"mucocele|mucinous", t, re.I) and not re.search(r"appendicitis", t, re.I):
             res.append("neg")
         elif re.search(r"appendectomy|s/p|status\s+post", t, re.I) and not re.search(r"stump", t, re.I):
             res.append("neg")
