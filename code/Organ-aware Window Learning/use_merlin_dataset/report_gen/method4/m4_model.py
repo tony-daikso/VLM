@@ -6,9 +6,13 @@ Text-only ablation = the same LLM / prompt / LoRA with no adapter and no image p
 from __future__ import annotations
 
 import csv
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+from m4_common import DISEASES, RES_GROUPS
 
 FIELDS = ["group", "unit", "region", "window", "pool"]
 
@@ -48,19 +52,55 @@ class ResamplerLayer(nn.Module):
         self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
         self.ff = nn.Sequential(nn.Linear(dim, dim * ff_mult), nn.GELU(), nn.Linear(dim * ff_mult, dim))
 
-    def forward(self, lat, x, key_pad):
+    def forward(self, lat, x, key_pad, attn_mask=None):
         q = self.ln_q(lat)
         kv = torch.cat([self.ln_kv(x), q], 1)                    # Flamingo: latents also attend to themselves
         kp = torch.cat([key_pad, torch.zeros_like(key_pad[:, : q.shape[1]])], 1)
+        if attn_mask is not None:                                 # merge both into one float mask (no dtype clash)
+            m = torch.zeros(kp.shape[0], q.shape[1], kp.shape[1], device=q.device, dtype=q.dtype)
+            m = m.masked_fill(kp[:, None, :] | attn_mask[None], float("-inf"))
+            m = m.repeat_interleave(self.attn.num_heads, 0)
+            lat = lat + self.attn(q, kv, kv, attn_mask=m, need_weights=False)[0]
+            return lat + self.ff(self.ln_ff(lat))
         lat = lat + self.attn(q, kv, kv, key_padding_mask=kp, need_weights=False)[0]
         return lat + self.ff(self.ln_ff(lat))
 
 
-class ImageAdapter(nn.Module):
-    """[B, T, 448] OWL vectors + mask -> [B, n_latents, llm_hidden]."""
+def group_attn_mask(meta_rows, n_latents):
+    """--resampler-groups: bool [n_latents, 1 + T + n_latents], True = blocked. Latents of an anatomical group see the
+    null token, the tokens of their group and the latents of their group only."""
+    assert sum(n for _, n, _ in RES_GROUPS) == n_latents, "RES_GROUPS latents must add up to n_latents"
+    tok_g = []
+    for r in meta_rows:
+        g = next((i for i, (_, _, mem) in enumerate(RES_GROUPS)
+                  if any(r["group"] == mg and (mu == "*" or r["unit"] == mu) for mg, mu in mem)), None)
+        if g is None:
+            raise ValueError(f"token {r['group']}/{r['unit']} has no resampler group")
+        tok_g.append(g)
+    lat_g = [i for i, (_, n, _) in enumerate(RES_GROUPS) for _ in range(n)]
+    T = len(meta_rows)
+    m = torch.ones(n_latents, 1 + T + n_latents, dtype=torch.bool)
+    m[:, 0] = False
+    tg, lg = torch.tensor(tok_g), torch.tensor(lat_g)
+    m[:, 1:1 + T] = lg[:, None] != tg[None, :]
+    m[:, 1 + T:] = lg[:, None] != lg[None, :]
+    return m
 
-    def __init__(self, meta_rows, llm_hidden, in_dim=448, dim=1024, n_latents=32, depth=2, heads=8, ff_mult=4):
+
+class ImageAdapter(nn.Module):
+    """[B, T, 448] OWL vectors + mask -> [B, n_latents, llm_hidden].
+    Options (off by default): aux_unit=True adds a per-token head predicting 14 unit-level abnormality logits
+    (--aux-unit-loss); groups=True restricts each latent to one anatomical group (--resampler-groups)."""
+
+    def __init__(self, meta_rows, llm_hidden, in_dim=448, dim=1024, n_latents=32, depth=2, heads=8, ff_mult=4,
+                 aux_unit=False, groups=False):
         super().__init__()
+        self.aux_head = nn.Sequential(nn.Linear(dim, 256), nn.GELU(), nn.Linear(256, len(DISEASES))) if aux_unit else None
+        if groups:
+            self.register_buffer("grp_mask", group_attn_mask(meta_rows, n_latents), persistent=False)
+        else:
+            self.grp_mask = None
+        self.last_aux_logits = None
         self.inp = nn.Sequential(nn.LayerNorm(in_dim), nn.Linear(in_dim, dim))
         self.type_emb = TypeEmbedding(meta_rows, dim)
         self.null = nn.Parameter(torch.zeros(1, 1, dim))          # always-valid key: no NaN when a study has no unit
@@ -73,11 +113,12 @@ class ImageAdapter(nn.Module):
     def forward(self, tok, mask):
         B = tok.shape[0]
         x = self.inp(tok.float()) + self.type_emb()[None]
+        self.last_aux_logits = self.aux_head(x) if self.aux_head is not None else None   # [B, T, 14]
         x = torch.cat([self.null.expand(B, 1, -1), x], 1)
         key_pad = torch.cat([torch.zeros(B, 1, dtype=torch.bool, device=mask.device), ~mask.bool()], 1)
         lat = self.latents[None].expand(B, -1, -1)
         for layer in self.layers:
-            lat = layer(lat, x, key_pad)
+            lat = layer(lat, x, key_pad, self.grp_mask)
         return self.proj(self.out_ln(lat))
 
 
@@ -95,12 +136,31 @@ class ReportGenModel(nn.Module):
         assert int(pos.sum()) == img.shape[0] * img.shape[1], "every row needs exactly n_latents image placeholders"
         return emb.masked_scatter(pos.unsqueeze(-1), img.reshape(-1, img.shape[-1]))
 
-    def forward(self, input_ids, attention_mask, labels=None, tok=None, mask=None):
-        return self.llm(inputs_embeds=self.embed(input_ids, tok, mask), attention_mask=attention_mask, labels=labels)
+    def forward(self, input_ids, attention_mask, labels=None, tok=None, mask=None, unit_labels=None, loss_w=None,
+                aux_weight=0.0):
+        """Baseline (no loss_w, aux_weight 0): exactly the HF causal-LM loss. Returns .loss, .lm_loss, .aux_loss."""
+        emb = self.embed(input_ids, tok, mask)
+        if loss_w is None:
+            out = self.llm(inputs_embeds=emb, attention_mask=attention_mask, labels=labels)
+            lm = out.loss
+        else:                                                    # --attr-token-weight: weighted token CE
+            out = self.llm(inputs_embeds=emb, attention_mask=attention_mask)
+            lg, lb, w = out.logits[:, :-1].float(), labels[:, 1:], loss_w[:, 1:].float()
+            ce = F.cross_entropy(lg.reshape(-1, lg.shape[-1]), lb.reshape(-1), ignore_index=-100, reduction="none")
+            w = w.reshape(-1) * (lb.reshape(-1) != -100)
+            lm = (ce * w).sum() / w.sum().clamp_min(1e-6)
+        aux = None
+        if aux_weight and unit_labels is not None and self.adapter is not None and self.adapter.last_aux_logits is not None:
+            al, ul = self.adapter.last_aux_logits.float(), unit_labels
+            keep = ul >= 0
+            aux = F.binary_cross_entropy_with_logits(al[keep], ul[keep].float()) if keep.any() else al.sum() * 0
+        loss = lm if aux is None else lm + aux_weight * aux
+        return SimpleNamespace(loss=loss, lm_loss=lm, aux_loss=aux, logits=getattr(out, "logits", None))
 
     @torch.no_grad()
     def generate(self, input_ids, attention_mask, tok=None, mask=None, max_new_tokens=320, eos_token_id=None,
-                 pad_token_id=None):
+                 pad_token_id=None, **kw):
         emb = self.embed(input_ids, tok, mask)
         return self.llm.generate(inputs_embeds=emb, attention_mask=attention_mask, max_new_tokens=max_new_tokens,
-                                 do_sample=False, num_beams=1, eos_token_id=eos_token_id, pad_token_id=pad_token_id)
+                                 do_sample=False, num_beams=1, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
+                                 **kw)

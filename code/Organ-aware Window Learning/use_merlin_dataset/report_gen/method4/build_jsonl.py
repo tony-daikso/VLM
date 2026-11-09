@@ -28,7 +28,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from m4_common import DISEASES, NAME, RENDER_ORDER  # noqa: E402
+from m4_common import DISEASES, GRADE_SYN, NAME, RENDER_ORDER  # noqa: E402
 
 RG = Path(os.environ.get("MERLIN_DATA", "/Users/tony.tu/Desktop/戴承智慧/VLM/data/CT/merlin")) / "report_gen"
 FEAT_ROOT = "/home/advantech/Desktop/Tony/VLM/OWL/report_gen/m4/features/"
@@ -48,8 +48,35 @@ def pos_of(v):
     return p
 
 
+def attr_terms(row):
+    """words to up-weight with --attr-token-weight: B's stated attribute values (side, grade, amount, type, site,
+    location, rib descriptions, vertebral levels) + synonyms; numbers with cm/mm and vertebral levels are matched by
+    regex in the dataset. Lower-cased, de-duplicated."""
+    terms = set()
+    for d, v in per_disease(row).items():
+        if not isinstance(v, dict) or v.get("status") not in ("pos", "uncertain"):
+            continue
+        for k, val in (v.get("attributes") or {}).items():
+            vals = val if isinstance(val, list) else [val]
+            for x in vals:
+                if not isinstance(x, str) or x in ("", "yes", "no", "not_stated") or k in ("cause",):
+                    continue
+                terms.update(t.lower() for t in GRADE_SYN.get(x, [x]))
+    return sorted(terms)
+
+
 def make_target(row):
-    """{disease: {sentence_clean, pos?}} -> tagged lines; identical sentences merged into one line."""
+    """B's target_lines (report order, cleaned doctor sentences, diseases per line) -> "[tags] sentence" lines.
+    Fallback without target_lines: per-disease sentence_clean, identical sentences merged into one line."""
+    if isinstance(row.get("target_lines"), list):
+        lines, ds = [], set()
+        for ln in row["target_lines"]:
+            txt = " ".join((ln.get("clean") or "").split())
+            tags = sorted({d for d in ln.get("diseases", []) if d in DISEASES}, key=RENDER_ORDER.index)
+            if txt and tags:
+                lines.append(f"[{','.join(tags)}] {txt}")
+                ds.update(tags)
+        return "\n".join(lines), sorted(ds, key=RENDER_ORDER.index)
     per = per_disease(row)
     sent2tags, sent2pos = {}, {}
     for d in DISEASES:
@@ -164,7 +191,7 @@ def main():
                    "feature_path": a.feat_root + (man[cid]["path"] if man else f"main/{cid}.npz"),
                    "n_valid": int(man[cid]["n_valid"]) if man else None,
                    "prompt": make_prompt(meta.get(cid), probs.get(cid), meas.get(cid), calib),
-                   "target": tgt, "target_diseases": tds}
+                   "target": tgt, "target_diseases": tds, "attr_terms": attr_terms(r)}
             if sp not in fh:
                 fh[sp] = open(Path(a.out) / f"{sp}.jsonl", "w")
             fh[sp].write(json.dumps(row, ensure_ascii=False) + "\n")

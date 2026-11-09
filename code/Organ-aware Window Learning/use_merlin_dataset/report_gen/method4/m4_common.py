@@ -76,3 +76,57 @@ def parse_output(text):
             if t in DISEASES and t not in out:
                 out[t] = sent
     return out
+
+
+# ---------------------------------------------------------------- experiment switches (all off by default)
+# Left/right paired units in token_meta (group, unit_a, unit_b) -- used by --lr-flip-prob.
+# region-unit indices checked in the mw_exp crop scripts / crops_info.jsonl (2026-11-09):
+#   ru_hydronephrosis k0=right k1=left; ru_atherosclerosis k0 infrarenal k1 bifurcation k2 cia_right k3 cia_left;
+#   ru_pelvis_fx k0 acetab_r k1 acetab_l k2 pubic k3 sacrum; ru_ascites k0 morison k1 perisplenic k2 pelvic (not mirror
+#   images, never swapped); ru_free_air k0 subdiaph k1 antabd; ru_bowel k0 antrum k1 duodenum.
+LR_PAIRS = [("organ3", "kidney_left", "kidney_right"), ("bone3", "ribs_left", "ribs_right"),
+            ("bone3", "hip_left", "hip_right"), ("bone3", "femur_left", "femur_right"),
+            ("ru_hydronephrosis", "k1", "k0"), ("ru_atherosclerosis", "k3", "k2"), ("ru_pelvis_fx", "k1", "k0")]
+LR_PAIRS += [(g, f"rib_left_{n}", f"rib_right_{n}") for g in ("rib3", "rib15")
+             for n in ["1_4", "5", "6", "7", "8", "9", "10", "11", "12"]]
+
+_LR_WORD = {"left": "right", "right": "left", "Left": "Right", "Right": "Left", "LEFT": "RIGHT", "RIGHT": "LEFT",
+            "lt": "rt", "rt": "lt", "Lt": "Rt", "Rt": "Lt"}
+_LR_WORD_RE = re.compile(r"\b(left|right|Left|Right|LEFT|RIGHT|lt|rt|Lt|Rt)\b")
+# a lone L / R (e.g. "R kidney"), never a vertebra (L1, L-2, L 3) or part of a word
+_LR_ABBR_RE = re.compile(r"(?<![A-Za-z0-9\-])([LR])(?![A-Za-z0-9\-])(?!\s?-?\d)")
+
+
+def swap_lr(text):
+    text = _LR_WORD_RE.sub(lambda m: _LR_WORD[m.group(1)], text)
+    return _LR_ABBR_RE.sub(lambda m: "R" if m.group(1) == "L" else "L", text)
+
+
+# Anatomical groups for --resampler-groups: (name, n_latents, [(token group, unit or "*")]); latents sum to 32
+RES_GROUPS = [
+    ("hepatobiliary", 5, [("organ3", "liver"), ("organ3", "gallbladder"), ("organ3", "pancreas"), ("ru_gallstones", "*"),
+                          ("ru_bile_duct", "*")]),
+    ("kidney", 3, [("organ3", "kidney_left"), ("organ3", "kidney_right"), ("organ3", "adrenal"),
+                   ("ru_hydronephrosis", "*")]),
+    ("spleen", 2, [("organ3", "spleen")]),
+    ("aorta", 3, [("organ3", "aorta"), ("ru_atherosclerosis", "*")]),
+    ("bowel", 4, [("organ3", "stomach"), ("organ3", "small_bowel"), ("organ3", "colon"), ("ru_bowel", "*"),
+                  ("ru_rlq", "*")]),
+    ("peritoneum", 3, [("ru_ascites", "*"), ("ru_free_air", "*")]),
+    ("spine", 5, [("organ3", "lumbar_spine"), ("bone3", "T8"), ("bone3", "T9"), ("bone3", "T10"), ("bone3", "T11"),
+                  ("bone3", "T12"), ("bone3", "L1"), ("bone3", "L2"), ("bone3", "L3"), ("bone3", "L4"), ("bone3", "L5"),
+                  ("bone3", "sacrum"), ("vert15", "*")]),
+    ("ribs", 4, [("bone3", "ribs_left"), ("bone3", "ribs_right"), ("rib3", "*"), ("rib15", "*")]),
+    ("pelvis", 3, [("bone3", "hip_left"), ("bone3", "hip_right"), ("bone3", "femur_left"), ("bone3", "femur_right"),
+                   ("ru_pelvis_fx", "*")]),
+]
+
+# --attr-token-weight: attribute words searched in the target lines (B's attribute values + these synonyms)
+GRADE_SYN = {"mild": ["mild", "minimal", "slight", "minor"], "moderate": ["moderate"],
+             "severe": ["severe", "marked", "massive", "extensive", "dense", "heavy", "advanced", "profound"],
+             "trace": ["trace", "traces", "tiny", "scant", "trivial", "minimal"], "small": ["small"],
+             "large": ["large", "massive"], "SBO": ["small bowel", "SBO"], "LBO": ["large bowel", "colonic", "LBO"],
+             "both": ["small and large bowel"], "left": ["left"], "right": ["right"], "bilateral": ["bilateral", "both"],
+             "intrahepatic": ["intrahepatic"], "extrahepatic": ["extrahepatic", "common bile duct", "CBD", "common duct"]}
+NUM_UNIT_RE = r"\d+(?:\.\d+)?\s*(?:cm|mm)\b"
+LEVEL_RE_TXT = r"\b[CTLS]\s?-?\d{1,2}\b"

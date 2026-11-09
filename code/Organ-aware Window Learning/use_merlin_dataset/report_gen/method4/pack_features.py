@@ -46,8 +46,12 @@ RU = {
 }
 
 
-def load(p):
-    return np.load(p) if os.path.exists(p) else None
+def load(p, key="emb"):
+    """npz or None when the file is missing or has no `key` (some region-unit files hold only present=False)."""
+    if not os.path.exists(p):
+        return None
+    z = np.load(p)
+    return z if key in z.files else None
 
 
 def main():
@@ -106,6 +110,10 @@ def main():
 
     man = []
     for n, cid in enumerate(ids):
+        fo = out + f"main/{cid}.npz"
+        if os.path.exists(fo):                            # resumable
+            man.append((cid, split[cid], f"main/{cid}.npz", int(np.load(fo)["mask"].sum())))
+            continue
         tok = np.zeros((T, 448), np.float16)
         mask = np.zeros(T, bool)
         j = 0
@@ -151,7 +159,6 @@ def main():
             j += nt
         assert j == T, (j, T)
         mask &= np.abs(tok.astype(np.float32)).sum(1) > 0
-        fo = out + f"main/{cid}.npz"
         np.savez(fo + ".tmp.npz", tok=tok, mask=mask)
         os.replace(fo + ".tmp.npz", fo)
         man.append((cid, split[cid], f"main/{cid}.npz", int(mask.sum())))

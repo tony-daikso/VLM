@@ -21,9 +21,9 @@ import torch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from build_jsonl import make_prompt, make_target  # noqa: E402
-from m4_common import BACKBONES, DISEASES, N_IMG_TOKENS, parse_output  # noqa: E402
-from m4_data import M4Dataset, collate  # noqa: E402
+from build_jsonl import attr_terms, make_prompt, make_target  # noqa: E402
+from m4_common import BACKBONES, DISEASES, N_IMG_TOKENS, RES_GROUPS, parse_output, swap_lr  # noqa: E402
+from m4_data import M4Dataset, collate, lr_permutation  # noqa: E402
 from m4_model import ImageAdapter, ReportGenModel, read_token_meta  # noqa: E402
 from train import load_llm  # noqa: E402
 
@@ -85,18 +85,48 @@ def write_ckpts(tok_dir, work):
     return plain, d7, d8, sd
 
 
-def write_data(work, n=6, T=50):
+SYN_UNITS = [("organ3", u, "", w, "mean") for u in ("liver", "gallbladder", "spleen", "kidney_left", "kidney_right",
+                                                    "aorta", "small_bowel", "colon", "lumbar_spine")
+             for w in ("baseline", "bone")] + \
+            [(g, u, "", "bone", p) for g, us in (("bone3", ("L1", "L2", "ribs_left", "ribs_right", "hip_left",
+                                                            "hip_right", "sacrum")),
+                                                 ("vert15", ("L1", "L2")), ("rib3", ("rib_left_5", "rib_right_5")),
+                                                 ("rib15", ("rib_left_5", "rib_right_5")))
+             for u in us for p in ("mean", "max")] + \
+            [("ru_hydronephrosis", f"k{k}", "r0", "w0", p) for k in (0, 1) for p in ("mean", "max")] + \
+            [("ru_ascites", "k0", "r0", "w0", "mean"), ("ru_free_air", "k0", "r0", "w0", "mean"),
+             ("ru_atherosclerosis", "k0", "r0", "w0", "mean"), ("ru_gallstones", "k0", "r0", "w0", "mean"),
+             ("ru_bile_duct", "k0", "r0", "w0", "mean"), ("ru_bowel", "k1", "r0", "w0", "mean"),
+             ("ru_rlq", "k0", "r0", "w0", "mean"), ("ru_pelvis_fx", "k3", "r0", "w0", "mean")]
+SYN_LINES = [  # B-style target_lines, synthetic generic text
+    ("Liver and biliary tree: Mild diffuse fatty infiltration.", ["hepatic_steatosis"]),
+    ("Gallbladder: Normal.", ["gallstones", "surgically_absent_gallbladder"]),
+    ("Spleen: Normal.", ["splenomegaly"]),
+    ("Kidneys and ureters: Moderate left hydronephrosis.", ["hydronephrosis"]),
+    ("Peritoneal cavity: No free fluid or free air.", ["ascites", "free_air"]),
+    ("Musculoskeletal: Compression fracture of L1 with 30% height loss. Fracture of the right 5th rib. R hip normal.",
+     ["fracture"]),
+]
+SYN_DIS = {"hepatic_steatosis": ("pos", {"grade": "mild", "distribution": "diffuse"}),
+           "gallstones": ("neg", {}), "surgically_absent_gallbladder": ("neg", {}), "splenomegaly": ("neg", {}),
+           "hydronephrosis": ("pos", {"side": "left", "grade": "moderate"}), "ascites": ("neg", {}),
+           "free_air": ("neg", {}),
+           "fracture": ("pos", {"vertebral_levels": ["L1"], "sites": ["vertebra", "rib"], "rib_desc": ["right 5th rib"],
+                                "vertebral_compression": "yes", "acuity": "not_stated"})}
+
+
+def write_data(work, n=6):
+    """synthetic features on a small real-named token layout + B-style target rows (no report text)."""
+    from build_unit_labels import case_units  # noqa: F401  (exercised through its CLI below)
     feat = work / "features"
     (feat / "main").mkdir(parents=True, exist_ok=True)
-    groups = [("organ3", f"u{i}", "", w, "mean") for i in range(5) for w in ("baseline", "bone")] + \
-             [("ru_x", f"k{i}", f"r{r}", "w0", p) for i in range(5) for r in range(4) for p in ("mean", "max")]
-    groups = groups[:T]
+    T = len(SYN_UNITS)
     with open(feat / "token_meta.csv", "w", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(["tok", "group", "unit", "region", "window", "pool"])
-        wr.writerows([i, *g] for i, g in enumerate(groups))
+        wr.writerows([i, *g] for i, g in enumerate(SYN_UNITS))
     rng = np.random.default_rng(0)
-    rows = {"train": [], "val": []}
+    rows, trows = {"train": [], "val": []}, {"train": [], "val": []}
     for i in range(n):
         cid = f"SYN{i:03d}"
         mask = rng.random(T) > 0.2
@@ -105,7 +135,11 @@ def write_data(work, n=6, T=50):
         np.savez(feat / "main" / f"{cid}.npz", tok=(rng.standard_normal((T, 448)) * mask[:, None]).astype(np.float16),
                  mask=mask)
         sp = "train" if i < n - 2 else "val"
-        tgt = {"case_id": cid, "split": sp, "diseases": {d: {"sentence_clean": s} for d, s in SYN.items()}}
+        tgt = {"case_id": cid, "split": sp,
+               "diseases": {d: {"status": st, "sentence_clean": next(l for l, ds in SYN_LINES if d in ds),
+                                "attributes": at} for d, (st, at) in SYN_DIS.items()},
+               "target_lines": [{"clean": l, "diseases": ds} for l, ds in SYN_LINES]}
+        trows[sp].append(tgt)
         probs = {d: float(rng.random()) for d in DISEASES}
         meas = {"abd_eq_rmax": "21.5", "sp_cc_main_cm": "10.2", "sp_ml": "180"}
         calib = {"aaa_cm": {"col": "abd_eq_rmax", "a": 1.1, "b": -0.3}, "spleen_cm": {"col": "sp_cc_main_cm", "a": 0.7, "b": 4.9}}
@@ -113,13 +147,24 @@ def write_data(work, n=6, T=50):
         rows[sp].append({"case_id": cid, "split": sp, "feature_path": str(feat / "main" / f"{cid}.npz"),
                          "prompt": make_prompt({"phase": "portal_venous", "manufacturer": "GE MEDICAL SYSTEMS",
                                                 "manufacturermodelname": "Discovery CT750 HD"}, probs, meas, calib),
-                         "target": t, "target_diseases": tds})
+                         "target": t, "target_diseases": tds, "attr_terms": attr_terms(tgt)})
     data = work / "data"
     data.mkdir(exist_ok=True)
     for sp, rr in rows.items():
         with open(data / f"{sp}.jsonl", "w") as f:
             f.writelines(json.dumps(r) + "\n" for r in rr)
+        with open(work / f"targets_{sp}.jsonl", "w") as f:
+            f.writelines(json.dumps(r) + "\n" for r in trows[sp])
     return feat, data
+
+
+def _resampler_inputs(ad, b):
+    """(x, key_pad) exactly as ImageAdapter.forward builds them (for the isolation test)."""
+    B = b["tok"].shape[0]
+    x = ad.inp(b["tok"].float()) + ad.type_emb()[None]
+    x = torch.cat([ad.null.expand(B, 1, -1), x], 1)
+    kp = torch.cat([torch.zeros(B, 1, dtype=torch.bool), ~b["mask"].bool()], 1)
+    return x, kp
 
 
 def main():
@@ -135,6 +180,7 @@ def main():
     torch.manual_seed(0)
     plain, d7, d8, sd = write_ckpts(a.tok, work)
     feat, data = write_data(work)
+    sys.path.insert(0, str(HERE))
     res = {}
 
     # 1. loaders: both VLM layouts give the same LM weights as the plain checkpoint
@@ -210,6 +256,77 @@ def main():
     a2.load_state_dict(torch.load(work / "adapter.pt"))
     res["adapter_roundtrip"] = all(torch.equal(x, y) for x, y in zip(adapter.state_dict().values(), a2.state_dict().values()))
 
+    # 9. experiment switches (all default off)
+    sw = {}
+    sw["swap_lr"] = swap_lr("Moderate left hydronephrosis. R hip. L1 and L-2, L 3. Right-sided. lt kidney")
+    assert sw["swap_lr"] == "Moderate right hydronephrosis. L hip. L1 and L-2, L 3. Left-sided. rt kidney"
+    perm = lr_permutation(meta)
+    names = [f"{r['group']}/{r['unit']}/{r['region']}/{r['window']}/{r['pool']}" for r in meta]
+    pairs = {names[i]: names[int(j)] for i, j in enumerate(perm) if int(j) != i}
+    sw["lr_pairs_found"] = len(pairs) // 2
+    assert pairs["organ3/kidney_left//baseline/mean"] == "organ3/kidney_right//baseline/mean"
+    assert pairs["ru_hydronephrosis/k0/r0/w0/mean"] == "ru_hydronephrosis/k1/r0/w0/mean"
+    assert "vert15/L1//bone/mean" not in pairs                      # vertebrae are never swapped
+    # unit labels via the CLI
+    subprocess.run([sys.executable, str(HERE / "build_unit_labels.py"), "--targets", str(work / "targets_train.jsonl"),
+                    str(work / "targets_val.jsonl"), "--meta", str(feat / "token_meta.csv"), "--out",
+                    str(work / "unit_labels")], check=True, capture_output=True)
+    ul = {json.loads(l)["case_id"]: json.loads(l) for l in open(work / "unit_labels/unit_labels_train.jsonl")}
+    ds_f = M4Dataset(data / "train.jsonl", tk, True, 1024, backbone="tiny_random", meta_rows=meta, unit_labels=ul,
+                     lr_flip_prob=1.0, attr_weight=3.0)
+    ds_n = M4Dataset(data / "train.jsonl", tk, True, 1024, backbone="tiny_random", meta_rows=meta, unit_labels=ul)
+    it_f, it_n = ds_f[1], ds_n[1]
+    assert it_f["flipped"] and not it_n["flipped"]
+    assert torch.equal(it_f["tok"], it_n["tok"][perm]) and torch.equal(it_f["unit_labels"], it_n["unit_labels"][perm])
+    kl = [i for i, r in enumerate(meta) if r["unit"] == "kidney_left"][0]
+    kr = [i for i, r in enumerate(meta) if r["unit"] == "kidney_right"][0]
+    hd = DISEASES.index("hydronephrosis")
+    sw["unit_label_kidney_L_R_hydro (orig, flipped)"] = [[int(it_n["unit_labels"][kl, hd]), int(it_n["unit_labels"][kr, hd])],
+                                                       [int(it_f["unit_labels"][kl, hd]), int(it_f["unit_labels"][kr, hd])]]
+    assert sw["unit_label_kidney_L_R_hydro (orig, flipped)"] == [[1, 0], [0, 1]]
+    l1 = [i for i, r in enumerate(meta) if r["group"] == "vert15" and r["unit"] == "L1"][0]
+    r5 = [i for i, r in enumerate(meta) if r["group"] == "rib3" and r["unit"] == "rib_right_5"][0]
+    fd = DISEASES.index("fracture")
+    sw["unit_label_fracture_vertL1_ribR5"] = [int(it_n["unit_labels"][l1, fd]), int(it_n["unit_labels"][r5, fd])]
+    assert sw["unit_label_fracture_vertL1_ribR5"] == [1, 1]
+    tgt_f = tk.decode(it_f["input_ids"][len(it_f["prompt_ids"]):])
+    sw["flipped_target_has"] = [x for x in ("Moderate right hydronephrosis", "left 5th rib", "L hip", "L1") if x in tgt_f]
+    assert len(sw["flipped_target_has"]) == 4
+    w = torch.tensor(it_n.get("loss_w", [])) if "loss_w" in it_n else None
+    assert w is None                                                # baseline: no weights
+    wf = torch.tensor(it_f["loss_w"])
+    up = [tk.decode([it_f["input_ids"][k]]) for k in range(len(wf)) if wf[k] > 1]
+    sw["attr_weighted_tokens"] = up
+    assert any("mild" in x.lower() for x in up) and any("L" in x for x in up)
+    # grouped resampler isolation: perturbing a liver token changes only the hepatobiliary latents
+    ga = ImageAdapter(meta, llm.config.hidden_size, dim=32, depth=2, heads=4, groups=True).eval()
+    bt2 = collate([ds_n[1], ds_n[2]], tk.pad_token_id)
+    with torch.no_grad():
+        z0 = ga.out_ln(ga.layers[1](ga.layers[0](ga.latents[None].expand(2, -1, -1), *_resampler_inputs(ga, bt2), ga.grp_mask),
+                       *_resampler_inputs(ga, bt2), ga.grp_mask))
+        bt3 = dict(bt2)
+        bt3["tok"] = bt2["tok"].clone()
+        liv = [i for i, r in enumerate(meta) if r["unit"] == "liver"]
+        bt3["tok"][:, liv] += 5.0
+        bt3["mask"] = bt2["mask"].clone()
+        bt3["mask"][:, liv] = True
+        z1 = ga.out_ln(ga.layers[1](ga.layers[0](ga.latents[None].expand(2, -1, -1), *_resampler_inputs(ga, bt3), ga.grp_mask),
+                       *_resampler_inputs(ga, bt3), ga.grp_mask))
+    changed = ((z1 - z0).abs().amax((0, 2)) > 1e-6).tolist()
+    n_hb = RES_GROUPS[0][1]
+    sw["grouped_changed_latents"] = [i for i, c in enumerate(changed) if c]
+    assert all(changed[:n_hb]) and not any(changed[n_hb:])
+    # aux unit loss gradients
+    aa = ImageAdapter(meta, llm.config.hidden_size, dim=32, depth=2, heads=4, aux_unit=True, groups=True)
+    bt4 = collate([ds_n[i] for i in range(len(ds_n))], tk.pad_token_id)
+    o4 = ReportGenModel(llm, aa, img_id)(bt4["input_ids"], bt4["attention_mask"], bt4["labels"], bt4["tok"],
+                                         bt4["mask"], unit_labels=bt4["unit_labels"], aux_weight=0.5)
+    o4.loss.backward()
+    sw["aux"] = {"lm": round(o4.lm_loss.item(), 3), "aux": round(o4.aux_loss.item(), 3),
+                 "aux_head_grad": sum(p.grad.abs().sum().item() for p in aa.aux_head.parameters())}
+    assert sw["aux"]["aux_head_grad"] > 0
+    res["switches"] = sw
+
     # 8. train.py + infer.py end to end, 2 optimizer steps on CPU (stage 1 -> stage 2 -> infer; text-only stage 2)
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
     py = sys.executable
@@ -222,10 +339,19 @@ def main():
             [py, str(HERE / "train.py"), "--stage", "2", "--text-only", "--out", str(work / "runs/text"), *common],
             [py, str(HERE / "infer.py"), "--llm", str(plain), "--run", str(work / "runs/s2/final"), "--data",
              str(data / "val.jsonl"), "--out", str(work / "gen_val.jsonl"), "--device", "cpu", "--dtype", "fp32",
-             "--max-new-tokens", "8", "--batch", "2"],
+             "--max-new-tokens", "8", "--batch", "2", "--num-workers", "0"],
             [py, str(HERE / "infer.py"), "--llm", str(plain), "--run", str(work / "runs/text/final"), "--text-only",
              "--data", str(data / "val.jsonl"), "--out", str(work / "gen_val_text.jsonl"), "--device", "cpu",
-             "--dtype", "fp32", "--max-new-tokens", "8", "--batch", "2"]]
+             "--dtype", "fp32", "--max-new-tokens", "8", "--batch", "2", "--num-workers", "0"],
+            [py, str(HERE / "train.py"), "--stage", "1", "--out", str(work / "runs/sw_s1"), *common,
+             "--aux-unit-loss", "0.5", "--unit-labels-dir", str(work / "unit_labels"), "--lr-flip-prob", "0.5",
+             "--attr-token-weight", "3", "--resampler-groups"],
+            [py, str(HERE / "train.py"), "--stage", "2", "--init-adapter", str(work / "runs/sw_s1/final/adapter.pt"),
+             "--out", str(work / "runs/sw_s2"), *common, "--aux-unit-loss", "0.5", "--unit-labels-dir",
+             str(work / "unit_labels"), "--lr-flip-prob", "0.5", "--attr-token-weight", "3", "--resampler-groups"],
+            [py, str(HERE / "infer.py"), "--llm", str(plain), "--run", str(work / "runs/sw_s2/final"), "--data",
+             str(data / "val.jsonl"), "--out", str(work / "gen_val_sw.jsonl"), "--device", "cpu", "--dtype", "fp32",
+             "--max-new-tokens", "8", "--batch", "2", "--num-workers", "0"]]
     for c in cmds:
         p = subprocess.run(c, env=env, capture_output=True, text=True)
         tag = Path(c[1]).stem + ":" + c[c.index("--out") + 1].split("/")[-1]

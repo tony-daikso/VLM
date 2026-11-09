@@ -16,6 +16,7 @@ another process (e.g. the CG vLLM) holds it, unless --force-gpu.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import math
@@ -58,6 +59,36 @@ def check_gpu(min_free_gb, force):
         sys.exit(f"[gpu] only {free:.1f} GB free (< {min_free_gb}); another job (CG vLLM?) holds the GPU -- ask first")
 
 
+def load_mapped_qwen2(path, cfg, dtype, key_mapping):
+    """Build Qwen2ForCausalLM on the meta device and fill it from the VLM safetensors shards, renaming keys with
+    key_mapping (regex -> replacement); vision keys are skipped. Independent of transformers' own VLM key handling."""
+    import re
+    import transformers
+    from safetensors import safe_open
+    with torch.device("meta"):
+        m = transformers.Qwen2ForCausalLM(cfg)
+    want = set(m.state_dict())
+    files = sorted(Path(path).glob("*.safetensors"))
+    sd = {}
+    for fn in files:
+        with safe_open(str(fn), framework="pt") as f:
+            for k in f.keys():
+                nk = k
+                for pat, rep in (key_mapping or {}).items():
+                    nk = re.sub(pat, rep, nk)
+                if nk in want:
+                    sd[nk] = f.get_tensor(k).to(dtype)
+    if "lm_head.weight" not in sd and cfg.tie_word_embeddings:
+        sd["lm_head.weight"] = sd["model.embed_tokens.weight"]
+    miss = sorted(want - set(sd) - {k for k in want if k.endswith("rotary_emb.inv_freq")})
+    if miss:
+        raise SystemExit(f"LLM keys missing after mapping ({len(miss)}), e.g. {miss[:3]}")
+    m.load_state_dict(sd, strict=False, assign=True)
+    m.model.rotary_emb = type(m.model.rotary_emb)(config=cfg)        # rebuild the (non-persistent) RoPE buffers
+    m.tie_weights() if cfg.tie_word_embeddings else None
+    return m.to(dtype)
+
+
 def load_llm(path, dtype, device, backbone="lingshu7b"):
     """-> (tokenizer, causal LM) for a BACKBONES entry; only the language model is materialised."""
     import transformers
@@ -74,9 +105,7 @@ def load_llm(path, dtype, device, backbone="lingshu7b"):
             tc["rope_scaling"] = None              # text-only positions: M-RoPE == 1-D RoPE
         for k in ("architectures", "model_type", "layer_types", "dtype"):
             tc.pop(k, None)
-        cfg = transformers.Qwen2Config(**tc)
-        kw = {"key_mapping": bb["key_mapping"]} if bb["key_mapping"] else {}
-        llm = transformers.Qwen2ForCausalLM.from_pretrained(path, config=cfg, torch_dtype=dtype, **kw)
+        llm = load_mapped_qwen2(path, transformers.Qwen2Config(**tc), dtype, bb["key_mapping"])
     elif bb["loader"] == "internvl_remote":
         from transformers import AutoModel
         full = AutoModel.from_pretrained(path, torch_dtype=dtype, trust_remote_code=True, low_cpu_mem_usage=True)
@@ -105,9 +134,13 @@ def build(args, device):
     if not args.text_only:
         meta = read_token_meta(args.meta)
         adapter = ImageAdapter(meta, llm.config.hidden_size, dim=args.res_dim, n_latents=N_IMG_TOKENS,
-                               depth=args.res_depth, heads=args.res_heads).to(device)
+                               depth=args.res_depth, heads=args.res_heads,
+                               aux_unit=getattr(args, "aux_unit_loss", 0) > 0,
+                               groups=getattr(args, "resampler_groups", False)).to(device)
         if args.init_adapter:
-            adapter.load_state_dict(torch.load(args.init_adapter, map_location=device))
+            missing, unexpected = adapter.load_state_dict(torch.load(args.init_adapter, map_location=device), strict=False)
+            if [k for k in missing if not k.startswith("aux_head")] or unexpected:
+                sys.exit(f"adapter checkpoint mismatch: missing {missing[:5]} unexpected {unexpected[:5]}")
             print("[init] adapter from", args.init_adapter, flush=True)
     llm.requires_grad_(False)
     if args.stage == 2:
@@ -144,7 +177,7 @@ def val_loss(model, dl, device, amp):
             out = model(b["input_ids"].to(device), b["attention_mask"].to(device), b["labels"].to(device),
                         b["tok"].to(device) if "tok" in b else None, b["mask"].to(device) if "mask" in b else None)
         k = int((b["labels"][:, 1:] != -100).sum())
-        tot, n = tot + out.loss.item() * k, n + k
+        tot, n = tot + out.lm_loss.item() * k, n + k                 # plain LM loss (comparable across switches)
     model.train()
     return tot / max(n, 1)
 
@@ -185,10 +218,24 @@ def main():
     ap.add_argument("--min-free-gb", type=float, default=30)
     ap.add_argument("--force-gpu", action="store_true")
     ap.add_argument("--seed", type=int, default=20261109)
+    # ---- experiment switches (all off by default; the baseline is unchanged)
+    ap.add_argument("--aux-unit-loss", type=float, default=0.0,
+                    help="weight of the per-unit BCE head before the resampler (needs --unit-labels-dir)")
+    ap.add_argument("--unit-labels-dir", default="", help="build_unit_labels.py output (unit_labels_train.jsonl)")
+    ap.add_argument("--lr-flip-prob", type=float, default=0.0,
+                    help="probability of swapping left/right paired units + left/right words in prompt and target")
+    ap.add_argument("--attr-token-weight", type=float, default=1.0,
+                    help="LM loss weight of attribute tokens (side, level, grade, sizes; from attr_terms)")
+    ap.add_argument("--resampler-groups", action="store_true",
+                    help="latents split by anatomical group, each attends only its own units (m4_common.RES_GROUPS)")
     ap.add_argument("--log-every", type=int, default=20)
     args = ap.parse_args()
     if args.stage == 1 and args.text_only:
         sys.exit("text-only has no projector: run stage 2 directly")
+    if args.text_only and (args.aux_unit_loss or args.resampler_groups):
+        sys.exit("--aux-unit-loss / --resampler-groups need image tokens")
+    if args.aux_unit_loss and not args.unit_labels_dir:
+        sys.exit("--aux-unit-loss needs --unit-labels-dir")
     args.lr = args.lr or (1e-3 if args.stage == 1 else 2e-4)
 
     random.seed(args.seed)
@@ -201,11 +248,20 @@ def main():
 
     use_img = not args.text_only
     feat_root = args.feat_root or None
+    meta_rows = read_token_meta(args.meta) if use_img else None
+    unit_labels = None
+    if args.aux_unit_loss:
+        unit_labels = {}
+        with open(Path(args.unit_labels_dir) / "unit_labels_train.jsonl") as f:
+            for line in f:
+                r = json.loads(line)
+                unit_labels[r["case_id"]] = r
     ds_tr = M4Dataset(Path(args.data) / "train.jsonl", tk, use_img, args.max_len, limit=args.train_limit,
-                      feat_root=feat_root, backbone=args.backbone)
+                      feat_root=feat_root, backbone=args.backbone, meta_rows=meta_rows, unit_labels=unit_labels,
+                      lr_flip_prob=args.lr_flip_prob, attr_weight=args.attr_token_weight)
     ds_va = M4Dataset(Path(args.data) / "val.jsonl", tk, use_img, args.max_len, limit=args.val_n,
                       feat_root=feat_root, backbone=args.backbone)
-    col = lambda b: collate(b, tk.pad_token_id, train=True)  # noqa: E731
+    col = functools.partial(collate, pad_id=tk.pad_token_id, train=True)
     dl_tr = DataLoader(ds_tr, batch_size=args.micro_bs, shuffle=True, collate_fn=col, num_workers=args.num_workers,
                        pin_memory=False, drop_last=True)
     dl_va = DataLoader(ds_va, batch_size=args.micro_bs, shuffle=False, collate_fn=col, num_workers=args.num_workers,
@@ -236,16 +292,20 @@ def main():
     log = open(out / "log.csv", "a")
     log.write("step,epoch,train_loss,val_loss,lr,sec\n")
     model.train()
-    step, micro, best, t0, run = 0, 0, float("inf"), time.time(), []
+    step, micro, best, t0, run, run_aux = 0, 0, float("inf"), time.time(), [], []
     epoch = 0
     while step < total:
         epoch += 1
         for b in dl_tr:
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
                 o = model(b["input_ids"].to(device), b["attention_mask"].to(device), b["labels"].to(device),
-                          b["tok"].to(device) if "tok" in b else None, b["mask"].to(device) if "mask" in b else None)
+                          b["tok"].to(device) if "tok" in b else None, b["mask"].to(device) if "mask" in b else None,
+                          unit_labels=b["unit_labels"].to(device) if "unit_labels" in b else None,
+                          loss_w=b["loss_w"].to(device) if "loss_w" in b else None, aux_weight=args.aux_unit_loss)
             (o.loss / args.grad_accum).backward()
             run.append(o.loss.item())
+            if o.aux_loss is not None:
+                run_aux.append(o.aux_loss.item())
             micro += 1
             if micro % args.grad_accum:
                 continue
@@ -255,8 +315,10 @@ def main():
             opt.zero_grad(set_to_none=True)
             step += 1
             if step % args.log_every == 0 or step == total:
-                print(f"step {step}/{total} ep {epoch} loss {sum(run) / len(run):.4f} lr {opt.param_groups[0]['lr']:.2e} "
-                      f"{time.time() - t0:.0f}s", flush=True)
+                aux_txt = f" aux {sum(run_aux) / len(run_aux):.4f}" if run_aux else ""
+                print(f"step {step}/{total} ep {epoch} loss {sum(run) / len(run):.4f}{aux_txt} "
+                      f"lr {opt.param_groups[0]['lr']:.2e} {time.time() - t0:.0f}s", flush=True)
+                run_aux = []
                 log.write(f"{step},{epoch},{sum(run) / len(run):.5f},,{opt.param_groups[0]['lr']:.3e},{time.time() - t0:.0f}\n")
                 log.flush()
                 run = []

@@ -2,12 +2,35 @@
 from __future__ import annotations
 
 import json
+import random
+import re
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from m4_common import BACKBONES, N_IMG_TOKENS, SYSTEM
+from m4_common import BACKBONES, DISEASES, LEVEL_RE_TXT, LR_PAIRS, N_IMG_TOKENS, NUM_UNIT_RE, SYSTEM, swap_lr
+
+
+def lr_permutation(meta_rows):
+    """token index -> index of its left/right partner (same region / window / pool); unpaired tokens map to self."""
+    idx = {(r["group"], r["unit"], r["region"], r["window"], r["pool"]): int(r["tok"]) for r in meta_rows}
+    perm = list(range(len(meta_rows)))
+    for g, a, b in LR_PAIRS:
+        for (gg, u, reg, w, p), i in idx.items():
+            if gg == g and u == a and (g, b, reg, w, p) in idx:
+                j = idx[(g, b, reg, w, p)]
+                perm[i], perm[j] = j, i
+    return torch.tensor(perm)
+
+
+def attr_char_spans(text, terms):
+    """character spans of attribute words (B's values + synonyms), numbers with cm/mm and vertebral levels."""
+    spans = []
+    pats = [re.escape(t) for t in terms if t] + [NUM_UNIT_RE, LEVEL_RE_TXT]
+    for m in re.finditer(r"(?i)(?<![A-Za-z])(?:" + "|".join(pats) + r")(?![A-Za-z])", text):
+        spans.append(m.span())
+    return spans
 
 ASSIST_PREFIX = {"chatml": "<|im_start|>assistant\n",
                  "chatml_qwen3_nothink": "<|im_start|>assistant\n<think>\n\n</think>\n\n"}
@@ -27,7 +50,8 @@ def chatml(prompt, use_image, n_img=N_IMG_TOKENS, backbone="lingshu7b"):
 
 class M4Dataset(Dataset):
     def __init__(self, jsonl, tokenizer, use_image=True, max_len=1024, n_img=N_IMG_TOKENS, limit=0,
-                 feat_root=None, backbone="lingshu7b", allow_test=False, train=True):
+                 feat_root=None, backbone="lingshu7b", allow_test=False, train=True, meta_rows=None,
+                 unit_labels=None, lr_flip_prob=0.0, attr_weight=1.0):
         self.rows = []
         with open(jsonl) as f:
             for line in f:
@@ -40,6 +64,16 @@ class M4Dataset(Dataset):
         self.tk, self.use_image, self.max_len, self.n_img = tokenizer, use_image, max_len, n_img
         self.feat_root, self.backbone, self.train = feat_root, backbone, train
         self.end_ids = tokenizer("<|im_end|>", add_special_tokens=False)["input_ids"]
+        # experiment switches (all off by default -> identical items to the baseline)
+        self.lr_flip_prob = lr_flip_prob if train else 0.0
+        self.attr_weight = attr_weight if train else 1.0
+        self.unit_labels = unit_labels            # {case_id: {"group/unit": [[disease_index, 0/1], ...]}} or None
+        if meta_rows is not None:
+            self.T = len(meta_rows)
+            self.perm = lr_permutation(meta_rows)
+            self.unit_tok = {}
+            for r in meta_rows:
+                self.unit_tok.setdefault(f"{r['group']}/{r['unit']}", []).append(int(r["tok"]))
         if use_image:
             tokname = BACKBONES[backbone]["img_token"]
             ids = tokenizer(tokname, add_special_tokens=False)["input_ids"]
@@ -56,17 +90,50 @@ class M4Dataset(Dataset):
         z = np.load(p)
         return torch.from_numpy(z["tok"].astype(np.float16)), torch.from_numpy(z["mask"].astype(bool))
 
+    def unit_label_tensor(self, cid):
+        y = torch.full((self.T, len(DISEASES)), -1, dtype=torch.int8)
+        for key, pairs in (self.unit_labels.get(cid) or {}).get("units", {}).items():
+            for t in self.unit_tok.get(key, []):
+                for d, v in pairs:
+                    y[t, d] = v
+        return y
+
     def __getitem__(self, i):
         r = self.rows[i]
-        p = self.tk(chatml(r["prompt"], self.use_image, self.n_img, self.backbone), add_special_tokens=False)["input_ids"]
+        flip = self.lr_flip_prob > 0 and random.random() < self.lr_flip_prob   # torch seeds `random` per worker
+        prompt, target = r["prompt"], r.get("target", "")
+        if flip:
+            prompt, target = swap_lr(prompt), swap_lr(target)
+        p = self.tk(chatml(prompt, self.use_image, self.n_img, self.backbone), add_special_tokens=False)["input_ids"]
         item = {"case_id": r["case_id"], "prompt_ids": p}
         if self.train:
-            t = self.tk(r["target"], add_special_tokens=False)["input_ids"] + self.end_ids
-            t = t[: max(self.max_len - len(p), 1)]               # never cut the prompt (it holds the image tokens)
+            if self.attr_weight != 1.0:
+                terms = [swap_lr(x) for x in r.get("attr_terms", [])] if flip else r.get("attr_terms", [])
+                enc = self.tk(target, add_special_tokens=False, return_offsets_mapping=True)
+                spans = attr_char_spans(target, terms)
+                tw = [self.attr_weight if any(a < e and s_ < b for s_, e in spans) else 1.0
+                      for a, b in enc["offset_mapping"]]
+                t = enc["input_ids"] + self.end_ids
+                tw = tw + [1.0] * len(self.end_ids)
+            else:
+                t = self.tk(target, add_special_tokens=False)["input_ids"] + self.end_ids
+                tw = None
+            n = max(self.max_len - len(p), 1)
+            t = t[:n]                                            # never cut the prompt (it holds the image tokens)
             item["input_ids"], item["labels"] = p + t, [-100] * len(p) + t
+            if tw is not None:
+                item["loss_w"] = [0.0] * len(p) + tw[:n]
         if self.use_image:
-            item["tok"], item["mask"] = self.features(r)
+            tok, mask = self.features(r)
+            if flip:
+                assert hasattr(self, "perm"), "lr flip with image tokens needs meta_rows"
+                tok, mask = tok[self.perm], mask[self.perm]
+            item["tok"], item["mask"] = tok, mask
             assert sum(x == self.img_id for x in p) == self.n_img
+            if self.unit_labels is not None and self.train:
+                y = self.unit_label_tensor(r["case_id"])
+                item["unit_labels"] = y[self.perm] if flip else y
+        item["flipped"] = flip
         return item
 
 
@@ -87,7 +154,14 @@ def collate(batch, pad_id, train=True):
     out = {"case_id": [b["case_id"] for b in batch], "input_ids": ids, "attention_mask": att}
     if train:
         out["labels"] = lab
+    if train and "loss_w" in batch[0]:
+        w = torch.zeros((len(batch), L), dtype=torch.float32)
+        for i, b in enumerate(batch):
+            w[i, : len(b["loss_w"])] = torch.tensor(b["loss_w"])
+        out["loss_w"] = w
     if "tok" in batch[0]:
         out["tok"] = torch.stack([b["tok"] for b in batch])
         out["mask"] = torch.stack([b["mask"] for b in batch])
+    if "unit_labels" in batch[0]:
+        out["unit_labels"] = torch.stack([b["unit_labels"] for b in batch])
     return out

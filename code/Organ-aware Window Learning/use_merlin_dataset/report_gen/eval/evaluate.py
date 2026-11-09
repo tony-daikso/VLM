@@ -28,13 +28,13 @@ Metrics (see README.md)
       bert_score defaults for English: roberta-large layer 17, no idf, no baseline rescale).
 
 Qwen requests are cached (--cache, keyed by prompt md5 + model + user message), so re-running is free.
-Concurrency is capped at 4 (the endpoints belong to the CG project).
+Concurrency is capped at MAX_JOBS = 8 (shared endpoints; use <=4 when another project is using the server).
 The test split is refused unless --allow-test (only after the user unlocks test).
 
-usage (Mac, Qwen through an ssh tunnel: ssh -N -L 18000:127.0.0.1:8000 A6000):
+usage (Mac, Qwen through an ssh tunnel: ssh -N -L 18003:127.0.0.1:8003 sparks):
   python evaluate.py --gen $MERLIN_DATA/report_gen/method1/val_drafts.jsonl --name method1 \
       --targets $MERLIN_DATA/report_gen/targets/targets_val.jsonl \
-      --url http://127.0.0.1:18000/v1 --jobs 2
+      --url http://127.0.0.1:18003/v1 --jobs 8
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ RENDER_ORDER = ["hepatic_steatosis", "biliary_ductal_dilation", "gallstones", "s
 POS = {"yes", "probably_yes"}
 NEG_EXPLICIT = {"no", "probably_no"}
 CATS = ["yes", "probably_yes", "unclear", "probably_no", "no", "not_mentioned"]
-MAX_JOBS = 4
+MAX_JOBS = 8  # shared endpoints: <=4 while CG used them; 8 allowed on Spark merlin-qwen-fp8 (11-09)
 
 # attribute checks: (disease, field, kind, arg)
 #   cat: exact; ord: exact + within one step (arg = order); num: |diff| <= arg; set: exact set; levels: regex
@@ -204,9 +204,15 @@ class QwenCache:
         self.path = Path(path)
         self.lock = threading.Lock()
         self.d = {}
-        if self.path.exists():
-            for r in read_jsonl(self.path):
-                self.d[r["key"]] = r
+        if self.path.exists():           # tolerant: several evaluate.py runs may append to the same cache
+            with open(self.path) as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if r.get("parse_ok") or r["key"] not in self.d:
+                        self.d[r["key"]] = r
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def get(self, k):
@@ -443,7 +449,7 @@ def main():
     ap.add_argument("--allow-test", action="store_true", help="ONLY after the user unlocked the test split")
     ap.add_argument("--ids", default="", help="optional id list (one per line) to restrict to")
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--url", default="http://127.0.0.1:18000/v1")
+    ap.add_argument("--url", default="http://127.0.0.1:18003/v1", help="Spark merlin-qwen-fp8 via ssh -L 18003:127.0.0.1:8003 sparks")
     ap.add_argument("--jobs", type=int, default=2, help=f"concurrent Qwen requests (capped at {MAX_JOBS})")
     ap.add_argument("--max-tokens", type=int, default=6000, help="same as the label run")
     ap.add_argument("--qwen-model-tag", default="Qwen3.8-27B-FP8", help="part of the cache key")
@@ -558,6 +564,9 @@ def main():
         metrics["presence"] = pres
         metrics["critical"] = crit
         metrics["category_agreement_6way"] = agree6
+        allr = [labels[c][d]["category"] for c in ok_ids for d in DISEASES]
+        allg = [ext[c][d]["category"] for c in ok_ids for d in DISEASES]
+        metrics["category_agreement_6way_all"] = float(np.mean([x == y for x, y in zip(allr, allg)])) if allr else float("nan")
         bin_agree = {}
         for d in DISEASES:
             yr = np.array([ref_label(labels[c][d]["category"], "owl") for c in ok_ids])
@@ -672,7 +681,7 @@ def write_md(path, m):
               "## Qwen 反抽與參考標籤的一致率（6 類別完全一致／二元一致）", "", "| 疾病 | 6 類一致 | 二元一致（owl 定義） |", "|---|---|---|"]
         for d in DISEASES:
             L.append(f"| {ZH[d]} | {fmt(m['category_agreement_6way'][d])} | {fmt(m['binary_agreement_owl'][d])} |")
-        L.append("")
+        L += [f"| 全部（病例×疾病） | {fmt(m.get('category_agreement_6way_all'))} | |", ""]
     if "style" in m:
         s = m["style"]
         L += ["## 風格相似度（和醫師原句目標比較）", "",

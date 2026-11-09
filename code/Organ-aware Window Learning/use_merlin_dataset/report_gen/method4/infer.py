@@ -8,6 +8,7 @@ usage: python infer.py --llm <LLM dir> --run runs/m4_s2/best --data <jsonl dir>/
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sys
 from pathlib import Path
@@ -33,6 +34,7 @@ def main():
     ap.add_argument("--meta", default="")
     ap.add_argument("--feat-root", default="")
     ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--max-new-tokens", type=int, default=320)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--device", default="cuda")
@@ -61,15 +63,17 @@ def main():
     if not a.text_only:
         meta = read_token_meta(a.meta or margs["meta"])
         adapter = ImageAdapter(meta, llm.config.hidden_size, dim=margs["res_dim"], n_latents=N_IMG_TOKENS,
-                               depth=margs["res_depth"], heads=margs["res_heads"]).to(device)
+                               depth=margs["res_depth"], heads=margs["res_heads"],
+                               aux_unit=margs.get("aux_unit_loss", 0) > 0,
+                               groups=margs.get("resampler_groups", False)).to(device)
         adapter.load_state_dict(torch.load(run / "adapter.pt", map_location=device))
         adapter.eval()
     model = ReportGenModel(llm, adapter, tk.convert_tokens_to_ids(BACKBONES[bbn]["img_token"]) if adapter else None)
     tk.padding_side = "left"
     ds = M4Dataset(a.data, tk, not a.text_only, limit=a.limit, feat_root=a.feat_root or None,
                    backbone=bbn, allow_test=a.allow_test, train=False)
-    dl = DataLoader(ds, batch_size=a.batch, shuffle=False, num_workers=2, pin_memory=False,
-                    collate_fn=lambda b: collate(b, tk.pad_token_id, train=False))
+    dl = DataLoader(ds, batch_size=a.batch, shuffle=False, num_workers=a.num_workers, pin_memory=False,
+                    collate_fn=functools.partial(collate, pad_id=tk.pad_token_id, train=False))
     end = tk.convert_tokens_to_ids("<|im_end|>")
     n = 0
     with open(a.out, "w") as f:
