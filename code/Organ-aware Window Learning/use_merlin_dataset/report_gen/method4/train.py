@@ -6,6 +6,10 @@
   other backbone:  --backbone lingshu_i8b --llm <Lingshu-I-8B dir>   (see m4_common.BACKBONES)
   text-only ablation (no OWL embedding, same prompt minus the image block, same LoRA recipe; no stage 1):
             python train.py --stage 2 --text-only --llm ... --out runs/m4_text_s2
+  cue source (train prompts only; val loss / inference always use the classifier line already in the jsonl):
+            --cue-source oof (default, = the jsonl prompt: 5-fold OOF probabilities)
+            --cue-source gt_dropout --cue-gt <build_cue_gt.py dir>/cue_gt.json [--cue-dropout 0.3] [--cue-gt-map sample]
+            [--meas-dropout p]  (each measurement item -> "unknown" with probability p; works with either source)
 
 Saved (every epoch and final/, plus best/ by val loss): adapter.pt (type embedding + resampler + projector),
 lora/ (peft adapter, stage 2), manifest.json (args, LLM path, token_meta / data md5, sizes) -> reusable for
@@ -33,7 +37,7 @@ from torch.utils.data import DataLoader
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from m4_common import BACKBONES, N_IMG_TOKENS  # noqa: E402
-from m4_data import M4Dataset, collate  # noqa: E402
+from m4_data import CueGT, M4Dataset, collate  # noqa: E402
 from m4_model import ImageAdapter, ReportGenModel, read_token_meta  # noqa: E402
 
 LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -164,6 +168,7 @@ def save(model, args, out_dir, extra):
         model.llm.save_pretrained(out_dir / "lora")
     man = {"args": vars(args), "llm": args.llm, "backbone": BACKBONES[args.backbone], "token_meta_md5": md5(args.meta) if not args.text_only else None,
            "train_md5": md5(Path(args.data) / "train.jsonl"), "val_md5": md5(Path(args.data) / "val.jsonl"),
+           "cue_gt_md5": md5(args.cue_gt) if getattr(args, "cue_gt", "") else None,
            "n_img_tokens": 0 if args.text_only else N_IMG_TOKENS, "time": time.strftime("%Y-%m-%d %H:%M"), **extra}
     (out_dir / "manifest.json").write_text(json.dumps(man, indent=1, default=str))
 
@@ -228,6 +233,19 @@ def main():
                     help="LM loss weight of attribute tokens (side, level, grade, sizes; from attr_terms)")
     ap.add_argument("--resampler-groups", action="store_true",
                     help="latents split by anatomical group, each attends only its own units (m4_common.RES_GROUPS)")
+    ap.add_argument("--cue-source", default="oof", choices=["oof", "gt_dropout"],
+                    help="train-time 14-class cue: oof = the jsonl prompt (5-fold OOF probabilities); gt_dropout = "
+                         "rebuilt from the train report labels each time an item is read (teacher forcing), each "
+                         "finding left out with probability --cue-dropout. Val rows always keep the classifier line")
+    ap.add_argument("--cue-gt", default="", help="build_cue_gt.py output cue_gt.json (train labels, thresholds, pools)")
+    ap.add_argument("--cue-dropout", type=float, default=0.3, help="gt_dropout: per-finding drop probability")
+    ap.add_argument("--cue-gt-map", default="sample", choices=["sample", "hard"],
+                    help="gt_dropout label -> number: sample = drawn from train OOF values on the label's side of the "
+                         "method-1 threshold; hard = --cue-gt-hi / --cue-gt-lo")
+    ap.add_argument("--cue-gt-hi", type=float, default=0.95)
+    ap.add_argument("--cue-gt-lo", type=float, default=0.02)
+    ap.add_argument("--meas-dropout", type=float, default=0.0,
+                    help="train only: each measurement item (aorta, spleen, HU values) -> 'unknown' with this probability")
     ap.add_argument("--log-every", type=int, default=20)
     args = ap.parse_args()
     if args.stage == 1 and args.text_only:
@@ -236,6 +254,8 @@ def main():
         sys.exit("--aux-unit-loss / --resampler-groups need image tokens")
     if args.aux_unit_loss and not args.unit_labels_dir:
         sys.exit("--aux-unit-loss needs --unit-labels-dir")
+    if args.cue_source == "gt_dropout" and not args.cue_gt:
+        sys.exit("--cue-source gt_dropout needs --cue-gt (build_cue_gt.py output)")
     args.lr = args.lr or (1e-3 if args.stage == 1 else 2e-4)
 
     random.seed(args.seed)
@@ -258,7 +278,9 @@ def main():
                 unit_labels[r["case_id"]] = r
     ds_tr = M4Dataset(Path(args.data) / "train.jsonl", tk, use_img, args.max_len, limit=args.train_limit,
                       feat_root=feat_root, backbone=args.backbone, meta_rows=meta_rows, unit_labels=unit_labels,
-                      lr_flip_prob=args.lr_flip_prob, attr_weight=args.attr_token_weight)
+                      lr_flip_prob=args.lr_flip_prob, attr_weight=args.attr_token_weight,
+                      cue_gt=CueGT(args.cue_gt, args.cue_dropout, args.cue_gt_map, args.cue_gt_hi, args.cue_gt_lo)
+                      if args.cue_source == "gt_dropout" else None, meas_dropout=args.meas_dropout)
     ds_va = M4Dataset(Path(args.data) / "val.jsonl", tk, use_img, args.max_len, limit=args.val_n,
                       feat_root=feat_root, backbone=args.backbone)
     col = functools.partial(collate, pad_id=tk.pad_token_id, train=True)

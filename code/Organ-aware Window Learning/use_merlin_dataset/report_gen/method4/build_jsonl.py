@@ -106,35 +106,77 @@ def fnum(x, nd=1):
     return None if math.isnan(v) else round(v, nd)
 
 
-def make_prompt(meta, probs, meas, calib, with_scores=True):
+def _int(x):
+    v = fnum(x, 0)
+    return None if v is None else int(round(v))
+
+
+def make_prompt(meta, probs, meas, calib, with_scores=True, hu=None, demographics=False):
+    """hu (prompt v1, 11-09): {'liver_hu', 'spleen_hu', 'wall_max_hu', 'wall_n300'} from OWL outputs; demographics adds
+    age / sex from Merlin metadata (skipped when missing). Measurements are always listed, 'unknown' when missing."""
     parts = []
     if meta:
         parts.append(f"CT abdomen/pelvis, {meta.get('phase', 'unknown').replace('_', ' ')} phase; scanner "
                      f"{meta.get('manufacturer', '?')} {meta.get('manufacturermodelname', '')}".strip() + ".")
     else:
         parts.append("CT abdomen/pelvis.")
+    if demographics and meta:
+        age, sex = _int(meta.get("Age")), (meta.get("Gender") or "").strip().lower()
+        demo = " ".join(x for x in ((f"{age}-year-old" if age is not None else ""),
+                                    (sex if sex in ("male", "female") else "")) if x)
+        if demo:
+            parts.append(f"Patient: {demo}.")
     parts.append("<image>")
     if with_scores and probs:
         parts.append("Image classifier probabilities (0-1): " +
                      "; ".join(f"{NAME[d]} {probs[d]:.2f}" for d in DISEASES if probs.get(d) is not None) + ".")
     m = []
-    if meas:
-        if calib and fnum(meas.get(calib["aaa_cm"]["col"])) is not None:
-            c = calib["aaa_cm"]
-            m.append(f"abdominal aortic max diameter {c['a'] * float(meas[c['col']]) / 10 + c['b']:.1f} cm")
-        if calib and fnum(meas.get(calib["spleen_cm"]["col"])) is not None:
-            c = calib["spleen_cm"]
-            m.append(f"spleen craniocaudal length {c['a'] * float(meas[c['col']]) + c['b']:.1f} cm")
-        if fnum(meas.get("sp_ml")) is not None:
-            m.append(f"spleen volume {float(meas['sp_ml']):.0f} mL")
-    if m:
-        parts.append("Image measurements: " + "; ".join(m) + ".")
+    meas = meas or {}
+    unk = "unknown"
+    if calib:
+        c = calib["aaa_cm"]                                       # image measure (mm) -> report cm, fit on train
+        v = fnum(meas.get(c["col"]), 3)
+        txt = f"{c['a'] * v / 10 + c['b']:.1f} cm" if v is not None else unk
+        m.append(f"abdominal aortic max diameter {txt}")
+        c = calib["spleen_cm"]
+        v = fnum(meas.get(c["col"]), 3)
+        txt = f"{c['a'] * v + c['b']:.1f} cm" if v is not None else unk
+        m.append(f"spleen craniocaudal length {txt}")
+    v = fnum(meas.get("sp_ml"), 0)
+    m.append(f"spleen volume {f'{v:.0f} mL' if v is not None else unk}")
+    if hu is not None:
+        lv, sv = _int(hu.get("liver_hu")), _int(hu.get("spleen_hu"))
+        m.append(f"liver {f'{lv} HU' if lv is not None else unk}")
+        m.append(f"spleen {f'{sv} HU' if sv is not None else unk}")
+        wm, wn = _int(hu.get("wall_max_hu")), _int(hu.get("wall_n300"))
+        m.append("aortoiliac wall calcification " + (f"max {wm} HU, {wn} voxels >=300 HU" if wm is not None else unk))
+    parts.append("Image measurements: " + "; ".join(m) + ".")
     parts.append("Write the report sentences about these 14 findings (hepatic steatosis, gallbladder, spleen size, "
                  "hydronephrosis, abdominal aorta, atherosclerosis, bone density, bowel obstruction, appendix, "
                  "ascites, free air, gallstones, bile ducts, fracture) in the department's wording, positive and "
                  "negative, one sentence per line, each line starting with the finding tag(s) it covers in brackets; "
                  "leave out findings the radiologist would not mention.")
     return "\n".join(parts)
+
+
+def load_hu(liver_spleen_csv, wall_csv):
+    """OWL HU values: liver_hu / spleen_hu (outputs_final/analysis_biliary/hu_all_final.csv) and the aortoiliac
+    vessel-wall shell HU (outputs_final/region_units/atherosclerosis/hu_feats.csv: max over the 4 crops of nh_*_max,
+    sum of nh_*_n300)."""
+    hu = {}
+    if liver_spleen_csv and os.path.exists(liver_spleen_csv):
+        for r in csv.DictReader(open(liver_spleen_csv)):
+            hu.setdefault(r["study_id"], {}).update(liver_hu=r.get("liver_hu"), spleen_hu=r.get("spleen_hu"))
+    if wall_csv and os.path.exists(wall_csv):
+        segs = ["infrarenal", "bifurcation", "cia_right", "cia_left"]
+        for r in csv.DictReader(open(wall_csv)):
+            mx = [fnum(r.get(f"nh_{s}_max"), 1) for s in segs]
+            nn = [fnum(r.get(f"nh_{s}_n300"), 1) for s in segs]
+            mx = [x for x in mx if x is not None]
+            nn = [x for x in nn if x is not None]
+            hu.setdefault(r["study_id"], {}).update(wall_max_hu=max(mx) if mx else None,
+                                                    wall_n300=sum(nn) if nn else None)
+    return hu
 
 
 def main():
@@ -148,7 +190,13 @@ def main():
     ap.add_argument("--feat-root", default=FEAT_ROOT)
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--hu-liver-spleen", default="", help="OWL analysis_biliary/hu_all_final.csv (prompt v1)")
+    ap.add_argument("--hu-wall", default="", help="OWL region_units/atherosclerosis/hu_feats.csv (prompt v1)")
+    ap.add_argument("--demographics", action="store_true", help="age / sex from metadata in the prompt (prompt v1)")
+    ap.add_argument("--drop-empty", action="store_true", help="leave out cases whose target is empty")
     a = ap.parse_args()
+    use_hu = bool(a.hu_liver_spleen or a.hu_wall)
+    hu = load_hu(a.hu_liver_spleen, a.hu_wall) if use_hu else {}
 
     probs = {}
     with open(a.scores) as f:
@@ -178,7 +226,9 @@ def main():
             sp = r.get("split")
             if sp not in ("train", "val"):
                 raise SystemExit(f"{cid}: split {sp!r} refused (train/val only; test is locked)")
-            st = stats.setdefault(sp, {"rows": 0, "no_scores": 0, "no_features": 0, "empty_target": 0})
+            st = stats.setdefault(sp, {"rows": 0, "written": 0, "no_scores": 0, "no_features": 0, "empty_target": 0,
+                                       "has_age": 0, "has_sex": 0, "has_liver_hu": 0, "has_spleen_hu": 0,
+                                       "has_wall_hu": 0})
             st["rows"] += 1
             if cid not in probs:
                 st["no_scores"] += 1
@@ -187,16 +237,31 @@ def main():
                 continue
             tgt, tds = make_target(r)
             st["empty_target"] += int(not tgt)
+            if a.drop_empty and not tgt:
+                continue
+            m_, h_ = meta.get(cid) or {}, hu.get(cid) or {}
+            st["has_age"] += int(_int(m_.get("Age")) is not None)
+            st["has_sex"] += int((m_.get("Gender") or "").strip().lower() in ("male", "female"))
+            st["has_liver_hu"] += int(_int(h_.get("liver_hu")) is not None)
+            st["has_spleen_hu"] += int(_int(h_.get("spleen_hu")) is not None)
+            st["has_wall_hu"] += int(_int(h_.get("wall_max_hu")) is not None)
+            st["written"] += 1
             row = {"case_id": cid, "split": sp,
                    "feature_path": a.feat_root + (man[cid]["path"] if man else f"main/{cid}.npz"),
                    "n_valid": int(man[cid]["n_valid"]) if man else None,
-                   "prompt": make_prompt(meta.get(cid), probs.get(cid), meas.get(cid), calib),
+                   "prompt": make_prompt(meta.get(cid), probs.get(cid), meas.get(cid), calib,
+                                         hu=h_ if use_hu else None, demographics=a.demographics),
                    "target": tgt, "target_diseases": tds, "attr_terms": attr_terms(r)}
             if sp not in fh:
                 fh[sp] = open(Path(a.out) / f"{sp}.jsonl", "w")
             fh[sp].write(json.dumps(row, ensure_ascii=False) + "\n")
     for f in fh.values():
         f.close()
+    import hashlib
+    stats["_inputs_md5"] = {str(x): hashlib.md5(Path(x).read_bytes()).hexdigest()
+                            for x in [*a.targets, a.scores, a.measure, a.calib, a.meta, a.manifest, a.hu_liver_spleen,
+                                      a.hu_wall] if x and os.path.exists(x)}
+    stats["_args"] = vars(a)
     json.dump(stats, open(Path(a.out) / "build_stats.json", "w"), indent=1)
     print(json.dumps(stats))
 

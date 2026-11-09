@@ -130,3 +130,123 @@ GRADE_SYN = {"mild": ["mild", "minimal", "slight", "minor"], "moderate": ["moder
              "intrahepatic": ["intrahepatic"], "extrahepatic": ["extrahepatic", "common bile duct", "CBD", "common duct"]}
 NUM_UNIT_RE = r"\d+(?:\.\d+)?\s*(?:cm|mm)\b"
 LEVEL_RE_TXT = r"\b[CTLS]\s?-?\d{1,2}\b"
+
+# ---------------------------------------------------------------- cue source (--cue-source; default "oof" = baseline)
+# The 14-class cue is the prompt line written by build_jsonl.make_prompt:
+#   "Image classifier probabilities (0-1): hepatic steatosis 0.12; ...; fracture 0.03."
+# (a disease without a score is left out; no scores at all -> no line). The measurement line is
+#   "Image measurements: <name> <value>; ..." with "<name> unknown" for a missing value.
+# Rewrites below keep exactly this format, so train-time cues (OOF or report labels) and inference cues (classifier)
+# look the same to the LLM.
+CUE_PREFIX = "Image classifier probabilities (0-1): "
+MEAS_PREFIX = "Image measurements: "
+MEAS_NAMES = ["abdominal aortic max diameter", "spleen craniocaudal length", "spleen volume", "liver", "spleen",
+              "aortoiliac wall calcification"]
+_NAME2D = {v: k for k, v in NAME.items()}
+OWL_POS, OWL_NEG = {"yes", "probably_yes"}, {"no", "probably_no", "not_mentioned"}
+
+
+def owl_binary(category):
+    """labels_disease14 category -> 1 / 0 / None, the binarisation the OWL classifiers were trained on (unclear -> None)."""
+    return 1 if category in OWL_POS else 0 if category in OWL_NEG else None
+
+
+def render_cue_line(probs):
+    """{disease: prob} -> the classifier line, character for character as build_jsonl.make_prompt writes it."""
+    return CUE_PREFIX + "; ".join(f"{NAME[d]} {probs[d]:.2f}" for d in DISEASES if probs.get(d) is not None) + "."
+
+
+def parse_cue(prompt):
+    """prompt -> ({disease: prob as written (2 decimals)}, line index) or ({}, None) when the prompt has no cue line."""
+    lines = prompt.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith(CUE_PREFIX):
+            body = ln[len(CUE_PREFIX):].rstrip(".")
+            out = {}
+            for item in body.split("; "):
+                if item.strip():
+                    name, v = item.rsplit(" ", 1)
+                    out[_NAME2D[name]] = float(v)
+            return out, i
+    return {}, None
+
+
+def replace_cue(prompt, probs):
+    """put a new classifier line in place of the old one (or right after the "<image>" line when the case had no
+    scores, which is where make_prompt puts it); an empty dict removes the line (= the no-score format)."""
+    lines = prompt.split("\n")
+    _, i = parse_cue(prompt)
+    keep = any(probs.get(d) is not None for d in DISEASES)
+    if i is None:
+        if keep:
+            lines.insert(lines.index("<image>") + 1, render_cue_line(probs))
+    elif keep:
+        lines[i] = render_cue_line(probs)
+    else:
+        del lines[i]
+    return "\n".join(lines)
+
+
+def drop_measurements(prompt, p, rng):
+    """each measurement item -> "<name> unknown" (the missing-value format) with probability p; returns
+    (prompt, n_items, n_dropped). Items already unknown stay unknown."""
+    lines = prompt.split("\n")
+    n = k = 0
+    for i, ln in enumerate(lines):
+        if not ln.startswith(MEAS_PREFIX):
+            continue
+        items = ln[len(MEAS_PREFIX):].rstrip(".").split("; ")
+        for j, it in enumerate(items):
+            name = next((m for m in sorted(MEAS_NAMES, key=len, reverse=True) if it.startswith(m + " ")), None)
+            if name is None:
+                continue
+            n += 1
+            if rng.random() < p:
+                items[j] = f"{name} unknown"
+                k += 1
+        lines[i] = MEAS_PREFIX + "; ".join(items) + "."
+    return "\n".join(lines), n, k
+
+
+def gt_cue_probs(y, pools, rng, dropout, gt_map="sample", hi=0.95, lo=0.02):
+    """--cue-source gt_dropout: report labels -> a cue dict in the OOF format.
+    y: 14 values 1 / 0 / None (owl binarisation; None = unclear -> left out, like a missing OOF score).
+    Each finding is dropped (left out) with probability `dropout`. gt_map:
+      sample : positive -> a value drawn from the train OOF scores of label-positive cases at or above the method-1
+               threshold (pools[d]["pos"]); negative -> drawn from label-negative OOF scores below it (pools[d]["neg"]).
+               The number looks like a real classifier output but is always on the label's side of the threshold.
+      hard   : positive -> hi, negative -> lo.
+    Returns (probs, n_labelled, n_dropped)."""
+    out, n, k = {}, 0, 0
+    for d, v in zip(DISEASES, y):
+        if v is None:
+            continue
+        n += 1
+        if rng.random() < dropout:
+            k += 1
+            continue
+        if gt_map == "sample":
+            pool = pools[d]["pos" if v else "neg"]
+            out[d] = pool[min(int(rng.random() * len(pool)), len(pool) - 1)]
+        else:
+            out[d] = hi if v else lo
+    return out, n, k
+
+
+def flip_cues(probs, thresholds, pools, p_pos2neg, p_neg2pos, rng):
+    """error-cue test (val inference only): a cue at/above the threshold becomes a negative-looking value (drawn from
+    pools[d]["neg"]) with probability p_pos2neg, a cue below it a positive-looking value (pools[d]["pos"]) with
+    probability p_neg2pos. Two uniforms are drawn for every scored finding whatever the probabilities, so with the
+    same seed a larger probability only adds flips. Returns (new_probs, {disease: [old, new, direction]})."""
+    new, flips = dict(probs), {}
+    for d in DISEASES:
+        v = probs.get(d)
+        if v is None:
+            continue
+        u, j = rng.random(), rng.random()
+        pos = v >= thresholds[d]
+        if (pos and u < p_pos2neg) or (not pos and u < p_neg2pos):
+            pool = pools[d]["neg" if pos else "pos"]
+            new[d] = pool[min(int(j * len(pool)), len(pool) - 1)]
+            flips[d] = [v, new[d], "pos2neg" if pos else "neg2pos"]
+    return new, flips

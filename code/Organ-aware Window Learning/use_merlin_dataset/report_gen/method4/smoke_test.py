@@ -4,7 +4,8 @@
 Checks: backbone loaders (Lingshu-7B-style and Lingshu-I-8B-style checkpoints with key mapping), dataset / collate
 shapes, 32 image placeholders, stage 1 (only adapter gets gradients), stage 2 (LoRA + adapter gradients), text-only
 ablation, left-padded generation + tag parsing, adapter / LoRA save-load round trip, and train.py / infer.py end to
-end for 2 optimizer steps on CPU.
+end for 2 optimizer steps on CPU; cue-source switches (--cue-source gt_dropout, --meas-dropout) and the error-cue test
+(infer.py --cue-flip-*) on synthetic labels / scores.
 usage: CUDA_VISIBLE_DEVICES= python smoke_test.py --tok <dir with a Qwen2/Lingshu tokenizer> --work <scratch dir>
 """
 import argparse
@@ -22,8 +23,9 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from build_jsonl import attr_terms, make_prompt, make_target  # noqa: E402
-from m4_common import BACKBONES, DISEASES, N_IMG_TOKENS, RES_GROUPS, parse_output, swap_lr  # noqa: E402
-from m4_data import M4Dataset, collate, lr_permutation  # noqa: E402
+from m4_common import (BACKBONES, DISEASES, N_IMG_TOKENS, RES_GROUPS, flip_cues, parse_cue, parse_output,  # noqa: E402
+                       render_cue_line, swap_lr)
+from m4_data import CueGT, M4Dataset, collate, lr_permutation  # noqa: E402
 from m4_model import ImageAdapter, ReportGenModel, read_token_meta  # noqa: E402
 from train import load_llm  # noqa: E402
 
@@ -156,6 +158,124 @@ def write_data(work, n=6):
         with open(work / f"targets_{sp}.jsonl", "w") as f:
             f.writelines(json.dumps(r) + "\n" for r in trows[sp])
     return feat, data
+
+
+def write_cue_inputs(work, data, n_pool=400):
+    """synthetic labels_disease14-style file + OOF score csv + thresholds (no report text) -> build_cue_gt.py CLI.
+    The smoke cases get random categories (incl. unclear); n_pool extra train-only ids just fill the score pools."""
+    rng = np.random.default_rng(1)
+    cats = ["yes", "probably_yes", "no", "probably_no", "not_mentioned", "unclear"]
+    rows = [json.loads(l) for sp in ("train", "val") for l in open(data / f"{sp}.jsonl")]
+    ids = [(r["case_id"], r["split"], parse_cue(r["prompt"])[0]) for r in rows]
+    for i in range(n_pool):
+        ids.append((f"POOL{i:04d}", "train", None))
+    lab, sc = [], []
+    for cid, sp, cue in ids:
+        ans = {}
+        for d in DISEASES:
+            c = cats[int(rng.choice(6, p=[.15, .05, .2, .05, .5, .05]))]
+            ans[d] = {"category": c, "detail": {}, "quotes": []}
+        lab.append({"study_id": cid, "split": sp, "answer": ans})
+        if cue is None:
+            cue = {d: (float(rng.uniform(.5, 1)) if ans[d]["category"] in ("yes", "probably_yes") else float(rng.uniform(0, .5)))
+                   for d in DISEASES if ans[d]["category"] != "unclear"}
+        sc.append({"study_id": cid, "split": sp, **{d: (f"{cue[d]:.5f}" if d in cue else "") for d in DISEASES}})
+    with open(work / "labels_syn.jsonl", "w") as f:
+        f.writelines(json.dumps(r) + "\n" for r in lab)
+    with open(work / "scores_syn.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, ["study_id", "split", *DISEASES])
+        w.writeheader()
+        w.writerows(sc)
+    with open(work / "thresholds_syn.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["disease", "t_f1"])
+        w.writerows([d, 0.5] for d in DISEASES)
+    subprocess.run([sys.executable, str(HERE / "build_cue_gt.py"), "--labels", str(work / "labels_syn.jsonl"),
+                    "--scores", str(work / "scores_syn.csv"), "--thresholds", str(work / "thresholds_syn.csv"),
+                    "--out", str(work / "cue")], check=True, capture_output=True)
+    return work / "cue" / "cue_gt.json"
+
+
+def cue_checks(work, data, tk, cue_path):
+    """--cue-source / --meas-dropout / error-cue flips; returns a dict of results (asserts on failure)."""
+    import random
+    out = {}
+    z = json.load(open(cue_path))
+    assert all(json.loads(l)["case_id"] not in z["labels_train"] for l in open(data / "val.jsonl")), "val label leaked"
+    # a. the classifier line re-rendered from its parsed values is identical, character for character
+    for sp in ("train", "val"):
+        for l in open(data / f"{sp}.jsonl"):
+            p = json.loads(l)["prompt"]
+            cue, i = parse_cue(p)
+            assert p.split("\n")[i] == render_cue_line(cue)
+    out["cue_line_roundtrip"] = "identical"
+    # b. switches off -> identical items; no cue_info key
+    d0 = M4Dataset(data / "train.jsonl", tk, True, 1024, backbone="tiny_random")
+    d1 = M4Dataset(data / "train.jsonl", tk, True, 1024, backbone="tiny_random", cue_gt=None, meas_dropout=0.0)
+    for i in range(len(d0)):
+        a_, b_ = d0[i], d1[i]
+        assert a_["input_ids"] == b_["input_ids"] and a_["labels"] == b_["labels"] and torch.equal(a_["tok"], b_["tok"])
+        assert "cue_info" not in a_
+    # c. gt_dropout: train cue from labels, on the label's side of the threshold, dropout rate ~ p
+    for p_ in (0.3, 0.0, 1.0):
+        dg = M4Dataset(data / "train.jsonl", tk, False, 1024, backbone="tiny_random",
+                       cue_gt=CueGT(cue_path, dropout=p_), meas_dropout=0.5)
+        random.seed(0)
+        n_lab = n_drop = n_side = n_meas = n_meas_drop = 0
+        for rep in range(300):
+            for i in range(len(dg)):
+                it = dg[i]
+                ci, cid = it["cue_info"], it["case_id"]
+                y = dict(zip(DISEASES, z["labels_train"][cid]))
+                n_lab, n_drop = n_lab + ci["n_labelled"], n_drop + ci["n_dropped"]
+                n_meas, n_meas_drop = n_meas + ci["n_meas"], n_meas_drop + ci["n_meas_dropped"]
+                txt = tk.decode(it["prompt_ids"])
+                shown, _ = parse_cue(txt.split("<|im_start|>user\n")[1])
+                assert shown == {d: v for d, v in ci["probs"].items()}
+                assert all(y[d] is not None for d in shown)            # unclear never shown
+                n_side += sum((v >= z["thresholds"][d]) == bool(y[d]) for d, v in shown.items())
+                assert n_side == n_lab - n_drop
+        out[f"gt_dropout_p{p_}"] = {"labelled_cells": n_lab, "dropped": n_drop, "drop_rate": round(n_drop / n_lab, 4),
+                                    "shown_on_label_side": f"{n_side}/{n_lab - n_drop}",
+                                    "meas_drop_rate(p=0.5)": round(n_meas_drop / max(n_meas, 1), 4)}
+        assert abs(n_drop / n_lab - p_) < 0.02
+    # hard map
+    dh = M4Dataset(data / "train.jsonl", tk, False, 1024, backbone="tiny_random",
+                   cue_gt=CueGT(cue_path, dropout=0.0, gt_map="hard"))
+    vals = set(dh[0]["cue_info"]["probs"].values())
+    assert vals <= {0.95, 0.02}
+    out["gt_hard_values"] = sorted(vals)
+    # d. val rows never take gt cues: refused in training mode, ignored in inference mode
+    try:
+        M4Dataset(data / "val.jsonl", tk, False, 1024, backbone="tiny_random", cue_gt=CueGT(cue_path))
+        raise AssertionError("val rows accepted gt cues")
+    except SystemExit as e:
+        out["val_with_gt_cue"] = f"refused: {e}"
+    dv = M4Dataset(data / "val.jsonl", tk, False, 1024, backbone="tiny_random", cue_gt=CueGT(cue_path), train=False)
+    dv0 = M4Dataset(data / "val.jsonl", tk, False, 1024, backbone="tiny_random", train=False)
+    assert all(dv[i]["prompt_ids"] == dv0[i]["prompt_ids"] for i in range(len(dv)))
+    out["val_inference_with_cue_gt"] = "ignored (identical prompts)"
+    # e. flips: reproducible with the seed, monotone in the probability, counts and directions right
+    cues = {json.loads(l)["case_id"]: parse_cue(json.loads(l)["prompt"])[0]
+            for sp in ("train", "val") for l in open(data / f"{sp}.jsonl")}
+    thr, pools = z["thresholds"], z["pools"]
+
+    def run(p1, p2, seed):
+        return {c: flip_cues(v, thr, pools, p1, p2, random.Random(f"{seed}:{c}"))[1] for c, v in cues.items()}
+    f1, f2, f3 = run(0.5, 0.2, 7), run(0.5, 0.2, 7), run(0.5, 0.2, 8)
+    assert f1 == f2 and f1 != f3
+    big = run(1.0, 1.0, 7)
+    assert all(set(f1[c]) <= set(big[c]) for c in cues)
+    n_pos = sum(v >= thr[d] for c in cues for d, v in cues[c].items())
+    n_neg = sum(v < thr[d] for c in cues for d, v in cues[c].items())
+    assert sum(len(x) for x in big.values()) == n_pos + n_neg
+    for c, fl in big.items():
+        for d, (old, new, k) in fl.items():
+            assert (k == "pos2neg") == (old >= thr[d]) and (new >= thr[d]) == (k == "neg2pos")
+    out["flips"] = {"seed7_twice_identical": True, "seed8_differs": True,
+                    "p(0.5,0.2)": {k: sum(v[2] == k for x in f1.values() for v in x.values()) for k in ("pos2neg", "neg2pos")},
+                    "p(1,1) flips all scored cells": f"{sum(len(x) for x in big.values())} = {n_pos} pos + {n_neg} neg"}
+    return out
 
 
 def _resampler_inputs(ad, b):
@@ -327,6 +447,10 @@ def main():
     assert sw["aux"]["aux_head_grad"] > 0
     res["switches"] = sw
 
+    # 10. cue source switches + error-cue test helpers
+    cue_path = write_cue_inputs(work, data)
+    res["cue"] = cue_checks(work, data, tk, cue_path)
+
     # 8. train.py + infer.py end to end, 2 optimizer steps on CPU (stage 1 -> stage 2 -> infer; text-only stage 2)
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
     py = sys.executable
@@ -351,7 +475,15 @@ def main():
              str(work / "unit_labels"), "--lr-flip-prob", "0.5", "--attr-token-weight", "3", "--resampler-groups"],
             [py, str(HERE / "infer.py"), "--llm", str(plain), "--run", str(work / "runs/sw_s2/final"), "--data",
              str(data / "val.jsonl"), "--out", str(work / "gen_val_sw.jsonl"), "--device", "cpu", "--dtype", "fp32",
-             "--max-new-tokens", "8", "--batch", "2", "--num-workers", "0"]]
+             "--max-new-tokens", "8", "--batch", "2", "--num-workers", "0"],
+            [py, str(HERE / "train.py"), "--stage", "2", "--text-only", "--out", str(work / "runs/text_gt"), *common,
+             "--cue-source", "gt_dropout", "--cue-gt", str(cue_path), "--meas-dropout", "0.2"],
+            [py, str(HERE / "train.py"), "--stage", "2", "--init-adapter", str(work / "runs/s1/final/adapter.pt"),
+             "--out", str(work / "runs/s2_gt"), *common, "--cue-source", "gt_dropout", "--cue-gt", str(cue_path)],
+            [py, str(HERE / "infer.py"), "--llm", str(plain), "--run", str(work / "runs/s2_gt/final"), "--data",
+             str(data / "val.jsonl"), "--out", str(work / "gen_val_gt_flip.jsonl"), "--device", "cpu", "--dtype",
+             "fp32", "--max-new-tokens", "8", "--batch", "2", "--num-workers", "0", "--cue-gt", str(cue_path),
+             "--cue-flip-pos2neg", "1.0", "--cue-flip-neg2pos", "0.3"]]
     for c in cmds:
         p = subprocess.run(c, env=env, capture_output=True, text=True)
         tag = Path(c[1]).stem + ":" + c[c.index("--out") + 1].split("/")[-1]
@@ -359,6 +491,12 @@ def main():
         if p.returncode:
             print(p.stdout[-2000:], p.stderr[-3000:])
             break
+    if (work / "gen_val_gt_flip.cues.jsonl").exists():
+        cl = [json.loads(l) for l in open(work / "gen_val_gt_flip.cues.jsonl")]
+        res["infer_cue_log"] = {"cases": len(cl), "flips": sum(len(r["flips"]) for r in cl),
+                                "meta": json.loads((work / "gen_val_gt_flip.cues.meta.json").read_text())["n_flips"]}
+        man = json.loads((work / "runs/s2_gt/final/manifest.json").read_text())
+        res["gt_run_manifest"] = {k: man["args"][k] for k in ("cue_source", "cue_dropout", "cue_gt_map")}
     res["saved_files"] = sorted(str(x.relative_to(work)) for x in (work / "runs").rglob("*") if x.is_file())[:40] \
         if (work / "runs").exists() else []
     print(json.dumps(res, indent=1, default=str))

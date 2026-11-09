@@ -9,7 +9,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from m4_common import BACKBONES, DISEASES, LEVEL_RE_TXT, LR_PAIRS, N_IMG_TOKENS, NUM_UNIT_RE, SYSTEM, swap_lr
+from m4_common import (BACKBONES, DISEASES, LEVEL_RE_TXT, LR_PAIRS, N_IMG_TOKENS, NUM_UNIT_RE, SYSTEM,
+                       drop_measurements, gt_cue_probs, replace_cue, swap_lr)
 
 
 def lr_permutation(meta_rows):
@@ -48,10 +49,26 @@ def chatml(prompt, use_image, n_img=N_IMG_TOKENS, backbone="lingshu7b"):
             + ASSIST_PREFIX[bb["chat"]])
 
 
+class CueGT:
+    """--cue-source gt_dropout (train rows only): the classifier line is rebuilt from the report labels of the case
+    (teacher forcing; m4_common.gt_cue_probs), each finding dropped with probability `dropout`, resampled every time
+    the item is read. Labels come from build_cue_gt.py, which holds TRAIN labels only."""
+
+    def __init__(self, path, dropout=0.3, gt_map="sample", hi=0.95, lo=0.02):
+        z = json.load(open(path))
+        self.labels, self.pools, self.thresholds = z["labels_train"], z["pools"], z["thresholds"]
+        self.dropout, self.gt_map, self.hi, self.lo = dropout, gt_map, hi, lo
+
+    def probs(self, case_id, rng):
+        if case_id not in self.labels:
+            raise SystemExit(f"{case_id}: no train label in the cue file (gt cues are train-only)")
+        return gt_cue_probs(self.labels[case_id], self.pools, rng, self.dropout, self.gt_map, self.hi, self.lo)
+
+
 class M4Dataset(Dataset):
     def __init__(self, jsonl, tokenizer, use_image=True, max_len=1024, n_img=N_IMG_TOKENS, limit=0,
                  feat_root=None, backbone="lingshu7b", allow_test=False, train=True, meta_rows=None,
-                 unit_labels=None, lr_flip_prob=0.0, attr_weight=1.0):
+                 unit_labels=None, lr_flip_prob=0.0, attr_weight=1.0, cue_gt=None, meas_dropout=0.0):
         self.rows = []
         with open(jsonl) as f:
             for line in f:
@@ -68,6 +85,12 @@ class M4Dataset(Dataset):
         self.lr_flip_prob = lr_flip_prob if train else 0.0
         self.attr_weight = attr_weight if train else 1.0
         self.unit_labels = unit_labels            # {case_id: {"group/unit": [[disease_index, 0/1], ...]}} or None
+        self.cue_gt = cue_gt if train else None   # CueGT or None (None = the prompt's own OOF / classifier line)
+        self.meas_dropout = meas_dropout if train else 0.0
+        if self.cue_gt is not None:
+            bad = [r["case_id"] for r in self.rows if r["split"] != "train"]
+            if bad:
+                raise SystemExit(f"gt cues are train-only; {len(bad)} non-train rows (e.g. {bad[0]})")
         if meta_rows is not None:
             self.T = len(meta_rows)
             self.perm = lr_permutation(meta_rows)
@@ -102,6 +125,16 @@ class M4Dataset(Dataset):
         r = self.rows[i]
         flip = self.lr_flip_prob > 0 and random.random() < self.lr_flip_prob   # torch seeds `random` per worker
         prompt, target = r["prompt"], r.get("target", "")
+        cue_info = None
+        if self.cue_gt is not None or self.meas_dropout > 0:
+            cue_info = {}
+            if self.cue_gt is not None:
+                probs, n_lab, n_drop = self.cue_gt.probs(r["case_id"], random)
+                prompt = replace_cue(prompt, probs)
+                cue_info.update(probs=probs, n_labelled=n_lab, n_dropped=n_drop)
+            if self.meas_dropout > 0:
+                prompt, n_m, k_m = drop_measurements(prompt, self.meas_dropout, random)
+                cue_info.update(n_meas=n_m, n_meas_dropped=k_m)
         if flip:
             prompt, target = swap_lr(prompt), swap_lr(target)
         p = self.tk(chatml(prompt, self.use_image, self.n_img, self.backbone), add_special_tokens=False)["input_ids"]
@@ -134,6 +167,8 @@ class M4Dataset(Dataset):
                 y = self.unit_label_tensor(r["case_id"])
                 item["unit_labels"] = y[self.perm] if flip else y
         item["flipped"] = flip
+        if cue_info is not None:
+            item["cue_info"] = cue_info
         return item
 
 

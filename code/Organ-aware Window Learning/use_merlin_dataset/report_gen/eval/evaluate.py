@@ -27,6 +27,12 @@ Metrics (see README.md)
   * style: corpus BLEU-1..4, mean ROUGE-L F1, BERTScore P/R/F (own implementation of Zhang et al. 2020 =
       bert_score defaults for English: roberta-large layer 17, no idf, no baseline rescale).
 
+  * error-cue test (--cue-log, method 4 only): infer.py --cue-gt [--cue-flip-*] logs each val case's original
+      classifier cue and the cues it flipped. Per class: of the flipped cells whose new cue contradicts the reference
+      label ("cue wrong"), the share whose generated label (strict) still equals the reference; pos2neg (cue made
+      negative) and neg2pos (cue made positive) separately; plus the same on unflipped cells where the classifier
+      itself was wrong (natural FN / FP cues). Classes with a weaker classifier are marked.
+
 Qwen requests are cached (--cache, keyed by prompt md5 + model + user message), so re-running is free.
 Concurrency is capped at MAX_JOBS = 8 (shared endpoints; use <=4 when another project is using the server).
 The test split is refused unless --allow-test (only after the user unlocks test).
@@ -79,6 +85,8 @@ MAX_JOBS = 8  # shared endpoints: <=4 while CG used them; 8 allowed on Spark mer
 
 # attribute checks: (disease, field, kind, arg)
 #   cat: exact; ord: exact + within one step (arg = order); num: |diff| <= arg; set: exact set; levels: regex
+# classes whose classifier is weakest (val AUROC; gallstones: .936 gs15_ft not adopted, conservative .881 in use)
+WEAK_CLF = {"hepatic_steatosis": ".832", "fracture": ".897", "gallstones": ".936／保守 .881"}
 ORD_GRADE = ["mild", "moderate", "severe"]
 ATTRS = [
     ("hydronephrosis", "side", "cat", None),
@@ -433,6 +441,52 @@ def bertscore(cands, refs, model_path, layer=17, batch=16, device="cpu", threads
 
 
 # --------------------------------------------------------------------------------------------- main
+def cue_test(cue_rows, thr, labels, ext, ok_ids):
+    """error-cue test from infer.py's <out>.cues.jsonl; reference = owl binarisation (unclear excluded), generated
+    positive = strict (yes / probably_yes)."""
+    ok = set(ok_ids)
+    out, tot = [], {}
+    keys = ("pos2neg", "neg2pos", "nat_fn", "nat_fp")
+    for d in DISEASES:
+        c_ = {k: Counter() for k in keys}
+        for r in cue_rows:
+            cid = r["case_id"]
+            if cid not in ok:
+                continue
+            y = ref_label(labels[cid][d]["category"], "owl")
+            if np.isnan(y):
+                continue
+            gcat = ext[cid][d]["category"]
+            g = gcat in POS
+            fl = r.get("flips", {}).get(d)
+            if fl:
+                k = fl[2]
+                cue_pos = k == "neg2pos"
+            else:
+                v = r.get("cue", {}).get(d)
+                if v is None:
+                    continue
+                cue_pos = v >= thr[d]
+                if cue_pos == bool(y):
+                    continue                                   # classifier right and not flipped: not part of the test
+                k = "nat_fp" if cue_pos else "nat_fn"
+            c_[k]["n"] += 1
+            wrong = cue_pos != bool(y)
+            c_[k]["wrong"] += int(wrong)
+            c_[k]["consistent"] += int(wrong and g == bool(y))
+            c_[k]["consistent_all"] += int(g == bool(y))
+            c_[k]["critical"] += int(wrong and y == 1 and gcat in NEG_EXPLICIT)
+        row = {"disease": d, "疾病": ZH[d] + ("（分類器較弱）" if d in WEAK_CLF else ""), "weak_clf_auroc": WEAK_CLF.get(d)}
+        for k in keys:
+            row[k] = dict(c_[k], rate=c_[k]["consistent"] / c_[k]["wrong"] if c_[k]["wrong"] else float("nan"))
+            tot.setdefault(k, Counter()).update(c_[k])
+        out.append(row)
+    out.append({"disease": "ALL", "疾病": "合計", "weak_clf_auroc": None,
+                **{k: dict(tot[k], rate=tot[k]["consistent"] / tot[k]["wrong"] if tot[k]["wrong"] else float("nan"))
+                   for k in keys}})
+    return out
+
+
 def fmt(x, nd=3):
     return "—" if x is None or (isinstance(x, float) and math.isnan(x)) else f"{x:.{nd}f}"
 
@@ -460,6 +514,7 @@ def main():
     ap.add_argument("--bertscore-layer", type=int, default=17)
     ap.add_argument("--bertscore-threads", type=int, default=4)
     ap.add_argument("--out-root", default=str(DATA_EVAL / "results"))
+    ap.add_argument("--cue-log", default="", help="infer.py <out>.cues.jsonl (error-cue test; needs Qwen extraction)")
     a = ap.parse_args()
 
     out = Path(a.out_root) / a.name
@@ -608,6 +663,12 @@ def main():
                               gen_only_rate=n_halluc / (n_both - n_elig) if n_both - n_elig else float("nan")))
         metrics["attributes"] = arows
 
+        if a.cue_log:
+            cmeta = json.loads(Path(a.cue_log[: -len(".jsonl")] + ".meta.json").read_text())
+            metrics["cue_test"] = {"cue_log": a.cue_log, **{k: cmeta[k] for k in ("p_pos2neg", "p_neg2pos", "seed",
+                                                                                  "n_flips", "cue_gt_md5")},
+                                   "rows": cue_test(read_jsonl(a.cue_log), cmeta["thresholds"], labels, ext, ok_ids)}
+
     # ---- style metrics (needs targets)
     if tgt:
         pair_ids = [c for c in ids if c in tgt and target_text(tgt[c])]
@@ -682,6 +743,21 @@ def write_md(path, m):
         for d in DISEASES:
             L.append(f"| {ZH[d]} | {fmt(m['category_agreement_6way'][d])} | {fmt(m['binary_agreement_owl'][d])} |")
         L += [f"| 全部（病例×疾病） | {fmt(m.get('category_agreement_6way_all'))} | |", ""]
+    if "cue_test" in m:
+        ct = m["cue_test"]
+        L += ["## 錯誤提示測試（val；提示錯但報告仍與原報告標籤一致）", "",
+              f"- 翻轉機率 陽→陰 {ct['p_pos2neg']}、陰→陽 {ct['p_neg2pos']}，seed {ct['seed']}；翻轉數 {ct['n_flips']}",
+              "- 「提示錯」= 翻轉後的提示與原報告標籤相反；一致率 = 其中生成反抽（嚴格）仍與原報告相同的比例。"
+              "自然錯誤 = 沒翻轉、但分類器本身就錯的提示（以方法一門檻 t_f1 判定陽／陰）。", "",
+              "| 疾病 | 陽→陰 翻轉 | 提示錯（原陽性） | 仍一致 | 一致率 | 其中關鍵錯誤 | 陰→陽 翻轉 | 提示錯（原陰性） | 仍一致 | 一致率 "
+              "| 自然 FN 提示 一致率（n） | 自然 FP 提示 一致率（n） |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        for r in ct["rows"]:
+            a_, b_, fn, fp = r["pos2neg"], r["neg2pos"], r["nat_fn"], r["nat_fp"]
+            L.append(f"| {r['疾病']} | {a_.get('n', 0)} | {a_.get('wrong', 0)} | {a_.get('consistent', 0)} | {fmt(a_['rate'])} | "
+                     f"{a_.get('critical', 0)} | {b_.get('n', 0)} | {b_.get('wrong', 0)} | {b_.get('consistent', 0)} | "
+                     f"{fmt(b_['rate'])} | {fmt(fn['rate'])}（{fn.get('wrong', 0)}） | {fmt(fp['rate'])}（{fp.get('wrong', 0)}） |")
+        L.append("")
     if "style" in m:
         s = m["style"]
         L += ["## 風格相似度（和醫師原句目標比較）", "",
