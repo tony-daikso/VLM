@@ -1,0 +1,3 @@
+a6/f_a6|fullfit_rs.py data/rib_straight/in/labels.csv data/push90/A/feats_v2 runs/a6/f_a6 --side-csv data/rib_straight/in/rib_side.csv --seeds 5 --seed0 0 --side 0.5 --lev 0.3 --ctx --blocks mean,max:0,1,2:base,bone --nbmode tile --xcpu
+a6/f_a6_s5|fullfit_rs.py data/rib_straight/in/labels.csv data/push90/A/feats_v2 runs/a6/f_a6_s5 --side-csv data/rib_straight/in/rib_side.csv --seeds 5 --seed0 5 --side 0.5 --lev 0.3 --ctx --blocks mean,max:0,1,2:base,bone --nbmode tile --xcpu
+a6/f_w2|fullfit_rs.py data/rib_straight/in/labels.csv data/push90/A/feats_v2 runs/a6/f_w2 --side-csv data/rib_straight/in/rib_side.csv --seeds 5 --seed0 0 --side 0.5 --lev 0.3 --ctx --blocks mean,max:0,1,2:base,bone --nbmode tile --nbw 2 --xcpu

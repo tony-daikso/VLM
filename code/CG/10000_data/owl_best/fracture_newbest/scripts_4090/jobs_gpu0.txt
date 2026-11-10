@@ -1,0 +1,19 @@
+lev28/v3_side_lev|fullfit_rs.py data/rib_v3/labels.csv data/rib_v3/feats3 runs/lev28/v3_side_lev --side-csv data/rib_v3/rib_side.csv --side 0.5 --lev 0.3 --seeds 3 --seed0 0
+lev28/v3_sl_s10|fullfit_rs.py data/rib_v3/labels.csv data/rib_v3/feats3 runs/lev28/v3_sl_s10 --side-csv data/rib_v3/rib_side.csv --side 0.5 --lev 0.3 --seeds 5 --seed0 10
+lev28/v3_sl_s20|fullfit_rs.py data/rib_v3/labels.csv data/rib_v3/feats3 runs/lev28/v3_sl_s20 --side-csv data/rib_v3/rib_side.csv --side 0.5 --lev 0.3 --seeds 5 --seed0 20
+lev28/v3_sl_s30|fullfit_rs.py data/rib_v3/labels.csv data/rib_v3/feats3 runs/lev28/v3_sl_s30 --side-csv data/rib_v3/rib_side.csv --side 0.5 --lev 0.3 --seeds 5 --seed0 30
+lev28/v3_sl_s40|fullfit_rs.py data/rib_v3/labels.csv data/rib_v3/feats3 runs/lev28/v3_sl_s40 --side-csv data/rib_v3/rib_side.csv --side 0.5 --lev 0.3 --seeds 5 --seed0 40
+lev28/v3_s1l_s50|fullfit_rs.py data/rib_v3/labels.csv data/rib_v3/feats3 runs/lev28/v3_s1l_s50 --side-csv data/rib_v3/rib_side.csv --side 1.0 --lev 0.3 --seeds 5 --seed0 50
+ftrib/final_f3_a|fullfit_rp2.py data/rib_v3/labels.csv data/rib_v3/feats3 runs/ftrib/final_f3_a --hid 512 --wd 0.01 --drop 0.3 --epochs 60 --lr 0.0005 --pool attmax --blocks all --seeds 3 --seed0 0
+ftrib/final_f3_b|fullfit_rp2.py data/rib_v3/labels.csv data/rib_v3/feats3 runs/ftrib/final_f3_b --hid 512 --wd 0.01 --drop 0.3 --epochs 60 --lr 0.0005 --pool attmax --blocks all --seeds 2 --seed0 3 --half
+pe/pf_ctx|fullfit_rs.py data/push90/in/pe_probe_labels.csv data/push90/B/feats runs/pe/pf_ctx --side-csv data/push90/in/pe_side.csv --ctx --side 0.5 --lev 0.3 --seeds 5 --seed0 0 --nsec 4 --nbmode tile --target t_pe
+rs15/t8_sl_s0|fullfit_rs.py data/rib_v3/labels.csv data/rib_straight/feats runs/rs15/t8_sl_s0 --side-csv data/rib_v3/rib_side.csv --side 0.5 --lev 0.3 --nsec 24 --seeds 5 --seed0 0
+rs15/t8_sl_s20|fullfit_rs.py data/rib_v3/labels.csv data/rib_straight/feats runs/rs15/t8_sl_s20 --side-csv data/rib_v3/rib_side.csv --side 0.5 --lev 0.3 --nsec 24 --seeds 5 --seed0 20
+rs15/t8_s1l_s30|fullfit_rs.py data/rib_v3/labels.csv data/rib_straight/feats runs/rs15/t8_s1l_s30 --side-csv data/rib_v3/rib_side.csv --side 1.0 --lev 0.3 --nsec 24 --seeds 5 --seed0 30
+pe2/pe_tv_s0|fullfit_rs.py data/push90b/B/pe_probe_labels_v.csv data/push90/B/feats runs/pe2/pe_tv_s0 --side-csv data/push90/B/pe_side.csv --ctx --side 0.5 --lev 0.3 --seeds 5 --seed0 0 --nsec 4 --nbmode tile --target t_vert
+pe2/pe_tv_s5|fullfit_rs.py data/push90b/B/pe_probe_labels_v.csv data/push90/B/feats runs/pe2/pe_tv_s5 --side-csv data/push90/B/pe_side.csv --ctx --side 0.5 --lev 0.3 --seeds 5 --seed0 5 --nsec 4 --nbmode tile --target t_vert
+pe2/pe_tv_s10|fullfit_rs.py data/push90b/B/pe_probe_labels_v.csv data/push90/B/feats runs/pe2/pe_tv_s10 --side-csv data/push90/B/pe_side.csv --ctx --side 0.5 --lev 0.3 --seeds 5 --seed0 10 --nsec 4 --nbmode tile --target t_vert
+pe2/pe_tv_s15|fullfit_rs.py data/push90b/B/pe_probe_labels_v.csv data/push90/B/feats runs/pe2/pe_tv_s15 --side-csv data/push90/B/pe_side.csv --ctx --side 0.5 --lev 0.3 --seeds 5 --seed0 15 --nsec 4 --nbmode tile --target t_vert
+pe2/pe_tv_s20|fullfit_rs.py data/push90b/B/pe_probe_labels_v.csv data/push90/B/feats runs/pe2/pe_tv_s20 --side-csv data/push90/B/pe_side.csv --ctx --side 0.5 --lev 0.3 --seeds 5 --seed0 20 --nsec 4 --nbmode tile --target t_vert
+pe2/pe_tv_s25|fullfit_rs.py data/push90b/B/pe_probe_labels_v.csv data/push90/B/feats runs/pe2/pe_tv_s25 --side-csv data/push90/B/pe_side.csv --ctx --side 0.5 --lev 0.3 --seeds 5 --seed0 25 --nsec 4 --nbmode tile --target t_vert
+pe2/pe_tv_s30|fullfit_rs.py data/push90b/B/pe_probe_labels_v.csv data/push90/B/feats runs/pe2/pe_tv_s30 --side-csv data/push90/B/pe_side.csv --ctx --side 0.5 --lev 0.3 --seeds 5 --seed0 30 --nsec 4 --nbmode tile --target t_vert

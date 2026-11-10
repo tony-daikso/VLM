@@ -201,7 +201,7 @@ def smoke_compare(a, n):
         print("drive not available", flush=True)
         return sc.EXIT_DRIVE_GONE
     sel = pd.read_csv(a.sel)
-    sel = sel[(sel.status == "ok") & (sel.phase == "noncontrast") & sel.flags.isna()].head(n)
+    sel = sel[(sel.status == "ok") & (sel.phase == "noncontrast") & sel["flags"].isna()].head(n)
     ser = pd.read_csv(a.series, dtype=str)
     sm = Path(a.out) / "_smoke"
     (sm / "records").mkdir(parents=True, exist_ok=True)

@@ -30,7 +30,8 @@ echo "$(ts) index process gone; last merge: $last"
 [ -d $DRV ] || { echo "$DRV not mounted -> abort"; exit 1; }
 
 echo "$(ts) smoke compare"
-$PY -u convert_nc.py --smoke-compare 3 || { echo "$(ts) smoke failed (exit $?) -> abort"; exit 1; }
+$PY -u convert_nc.py --smoke-compare 3; src=$?
+[ $src -eq 0 ] || { echo "$(ts) smoke failed (exit $src) -> abort"; exit 1; }
 
 ssh CT-rate "mkdir -p /media/daikso/CTDATA/cg10k/nifti_3mm_nc"
 $PY -u convert_nc.py --workers 2 > $OUT/convert_nc.log 2>&1 &

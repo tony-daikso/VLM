@@ -1,0 +1,42 @@
+{
+ "model": "fracture official best a6x10w2_tv7 (push90b; selected by train CV .9024; Merlin val .8973 [.8823, .9119])",
+ "created": "2026-11-10",
+ "rule": "every component refit on FULL Merlin train (test split never read) or = its saved fold models; inference only from saved files",
+ "val_reproduction": {
+  "stored_inputs": 0.8973111774509142,
+  "saved_models": 0.8981432181471414,
+  "saved_ci": [
+   0.8981432181471414,
+   0.8832242318087152,
+   0.9125891813873701
+  ],
+  "n_val": 4941
+ },
+ "stacker": {
+  "file": "integ/stacker.pkl (+ stacker.json human-readable)",
+  "kind": "S3n = S2 + FT (no FT_pv); 3 site heads StandardScaler+LogisticRegression(max_iter 3000) fit on t_vert / t_rib / t_pel over the train frame (train OOF inputs); case logit = max(site logits)",
+  "missing_inputs": "train median (stacker.json medians_train) for FT-type columns and any NaN S2 column"
+ },
+ "inputs": {
+  "S2 members (J_add, L_v15, L_v3, L_r, L_rinst, L_p, LJ_*, I_v/I_r/I_p, U_pel, U_org_pel, U_org_out)": "s2/ (full-train refits, see s2/manifest_s2.json); I_* = mean over expI groups of z(seed-mean site logit) with train-OOF mean/sd in stacker.json zparams",
+  "FT_sp": "ft_sp/model_full_s{0,1}.pt (TS Dataset297 encoder stages>=2 + head; scripts_cg/frac_ft_full.py --mode score on crop_prep.py 3 mm spine pack); value = mean of 2 seeds (raw logit)",
+  "FT_sp15": "ft_sp15/models/model_f{0-4}_s0.pt (saved fold models of spine15_ft s0_tf2lse; frac15_ft.py --score on spine15_crop.py 1.5 mm crops); value = fold mean",
+  "P15FT": "p15ft/s{0,1}/models/model_f{0-4}_s*.pt (pelvis15_ft full_297s_s0/s1 fold models; pv15_ft.py --score on pv15_crop.py ROI, bf16); value = mean of the two seeds fold means (missing if no pelvis ROI -> train median)",
+  "RVRS": "zmix(lev28, rs15, a6x10w2_side): probes/lev28/* (rib_feat3 feats3), probes/rs15/* (rs_tile + rs_feat feats), probes/a6/{f_a6,f_a6_s5,f_w2} (rs_tile + rs_feat2 stages 0-2 base+bone); per run: seed-mean ft_side z-scored with that run's train-OOF mean/sd, runs averaged; then zmix z with the combined train-OOF mean/sd (all params in stacker.json zparams)",
+  "PE": "probes/pe/pf_ctx (pe15_crop + pe_feat feats; ft_head z with OOF stats)",
+  "PE2": "probes/pe2/pe_tv_s{0..30} (same feats; ft_head z per run, mean of 7 runs)",
+  "FT_rib": "probes/ftrib/final_f3_{a,b} (feats3; fullfit_rp2.py; ft z per run with OOF stats from integ/rib_ft_runs, mean)"
+ },
+ "probe_engine": "scripts_4090/fullfit_rs.py (rs_probe3 superset) and fullfit_rp2.py (rib_probe2): --mode fit saves models/seed*.pt with train mu/sd; --mode score --score-ids IDS --score-out CSV applies them",
+ "scoring_order": [
+  "crops: pe15_crop, spine15_crop, pv15_crop, crop_prep (3 mm spine), rib15_full boxes + rib_prep ROI + rs_tile (scripts_cg/cpu_chain.sh)",
+  "features: pe_feat (bf16), rib_feat3 --maxst 1 --bone --nsec 24 (bf16; scripts_4090/cg/scripts/rib_feat3_lowmem.py = same features with windows run one at a time, used for CG), rs_feat (fp32), rs_feat2 --stages 0,1,2 --wins base,bone (fp32)",
+  "component scores (above)",
+  "integ/integrate.py --cg (reads probes/*/*/cg_scores.csv, s2/s2_scores_merlin_cg.csv, ft_*/cg_scores.csv, p15ft/s*/cg_scores.csv, cg_inputs/ids_main.txt)"
+ ],
+ "cg_outputs": {
+  "per_exam": "integ/cg_main_scores.csv (all inputs + site logits + fracture)",
+  "eval": "Mac VLM/data/CT/CG/10000_data/owl_infer/best/probs_fracture_newbest_main.csv + eval_fracture_newbest_*.csv + fracture_newbest_cg.md"
+ },
+ "cg_features_archive": "CT-rate /media/daikso/Tony/VLM/data/CT/CG/10000_data/owl_frac_v3/ (crops, feats)"
+}
