@@ -75,7 +75,27 @@ def load():
     df["eff_mm"] = eff.where(eff.notna(), df.slice_thickness)
     df["tbin"] = df.eff_mm.map(tbin)
     df["chest"] = df.chest.fillna(False).astype(bool)
+    # thinnest AXIAL series per exam (user definition 11-10): ImageType contains 'AXIAL', min(SliceThickness) over the exam
+    ax = pd.read_csv(ROOT / "dicom_index/series.csv", usecols=["EXAMID", "ImageType", "SliceThickness", "z_gap_med", "SeriesDescription"])
+    ax = ax[ax.ImageType.fillna("").str.contains("AXIAL")]
+    th = ax.groupby("EXAMID").SliceThickness.min().rename("thin_mm")
+    contig = ax[(ax.SliceThickness <= 1.25) & (ax.z_gap_med <= 1.5)].EXAMID.unique()
+    hrct = ax[(ax.SliceThickness <= 1.25) & ax.SeriesDescription.fillna("").str.contains("HRCT", case=False)].EXAMID.unique()
+    df = df.merge(th, left_on="EXAMID", right_index=True, how="left")
+    df["thin_bin"] = df.thin_mm.map(thin_bin)
+    df["thin_contig"] = df.EXAMID.isin(contig); df["thin_hrct"] = df.EXAMID.isin(hrct)
     return df, sel
+
+
+THIN_ORDER = ["最薄 5 mm", "最薄 3 mm", "最薄 2.5 mm", "最薄 3.75 mm", "最薄 1–1.25 mm", "最薄 其他", "最薄 無 axial"]
+
+
+def thin_bin(t):
+    if not np.isfinite(t): return "最薄 無 axial"
+    for v, b in ((5.0, "最薄 5 mm"), (3.0, "最薄 3 mm"), (2.5, "最薄 2.5 mm"), (3.75, "最薄 3.75 mm")):
+        if abs(t - v) < 1e-3: return b
+    if 1.0 <= t <= 1.25: return "最薄 1–1.25 mm"
+    return "最薄 其他"   # 0.5 / 0.625 / 2 / 7.5 / 10 mm
 
 
 def label(d, k):
@@ -280,6 +300,82 @@ def conclusions(R, C, CT, HW, PV):
         "- 結論：CG 骨折的退化（尤其新模型）主要和「骨盆 1.5 mm 頭在含骨盆的 CG 序列上整體偏高、搶走 max」有關；厚度本身在 CG 內無法與序列種類／院區分開，目前資料無法證明厚度效應。"]
 
 
+def thinnest_section(df, mf):
+    """Section A: strata = thinnest AXIAL series of the exam (any series, not necessarily the one converted)."""
+    rng = np.random.default_rng(SEED)   # own stream: section B numbers are unchanged by adding this section
+    bins = [b for b in THIN_ORDER if (df.thin_bin == b).any()]
+    t5 = df.thin_bin == "最薄 5 mm"
+    ST = [(b, df.thin_bin == b) for b in bins] + [("最薄 5 mm・主序列非 chest", t5 & ~df.chest), ("最薄 5 mm・主序列 chest", t5 & df.chest),
+          ("最薄 ≤3 mm（3/2.5/1–1.25）", df.thin_mm <= 3.0 + 1e-6), ("最薄 1–1.25 mm・連續（z gap ≤1.5）", (df.thin_bin == "最薄 1–1.25 mm") & df.thin_contig),
+          ("最薄 1–1.25 mm・有間隙", (df.thin_bin == "最薄 1–1.25 mm") & ~df.thin_contig)]
+    L, D = model_table(df, ST, rng); R = pd.DataFrame(L)
+    C = pd.DataFrame(contrast_rows(R, D, [(b, "最薄 5 mm") for b in bins if b != "最薄 5 mm"] + [("最薄 ≤3 mm（3/2.5/1–1.25）", "最薄 5 mm")]))
+    HW = head_wins(df, mf, ST); PV = pelvis_roi(df, mf, ST)
+    yfx = eb.labels(df, "fracture", "B")
+    X = pd.crosstab(df.thin_bin, df.tbin).reindex(index=bins, columns=["≤3 mm", "3.75 mm", "5 mm", "≥7.5 mm"]).fillna(0).astype(int)
+    XB = pd.crosstab(df.thin_bin[~np.isnan(yfx)], df.tbin[~np.isnan(yfx)]).reindex(index=bins, columns=X.columns).fillna(0).astype(int)
+    X["評估集合計"] = X.sum(1); X["骨折 B cohort"] = XB.sum(1)
+    X["骨折 B 陽性/陰性"] = [f"{int(((yfx == 1) & (df.thin_bin == b)).sum())}/{int(((yfx == 0) & (df.thin_bin == b)).sum())}" for b in bins]
+    X["chest 主序列"] = [int((df.chest & (df.thin_bin == b)).sum()) for b in bins]
+    Xo = X.reset_index().rename(columns={"thin_bin": "最薄 axial"}); Xo.insert(0, "part", "thin_x_main")
+    m1 = df.thin_bin == "最薄 1–1.25 mm"
+    oth = df.loc[df.thin_bin == "最薄 其他", "thin_mm"].value_counts().sort_index()
+    f = lambda r: f"新 {r.AUROC_new:.3f} / C3 {r.AUROC_C3:.3f}"
+    def mtab(rows, strata):
+        W = []
+        for k in rows:
+            for g in strata:
+                x = R[(R.row == k) & (R.stratum == g)]
+                if not len(x): continue
+                x = x.iloc[0]
+                W.append({"子群": NAME[k], "最薄 axial 層": g, "N/陽性/陰性": f"{x.N}/{x.n_pos}/{x.n_neg}", "新 a6x10w2_tv7": ci(x, "new"), "舊 C3": ci(x, "C3"),
+                          "E3_late": ci(x, "E3"), "Δ 新−C3 [配對 boot CI] DeLong p": dnc(x)})
+        return pd.DataFrame(W)
+    def ctab(rows):
+        W = []
+        for k in rows:
+            for _, x in C[C.row == k].iterrows():
+                W.append({"子群": NAME[k], "比較": x.stratum.replace("Δ ", ""), "新": ci(x, "new", True), "C3": ci(x, "C3", True), "E3_late": ci(x, "E3", True),
+                          "(新−C3) 的層間差 [boot CI] p": dnc(x)})
+        return pd.DataFrame(W)
+    hp = HW.copy(); hp["stratum"] = hp.stratum.str.replace("^CG ", "", regex=True)
+    pv = PV.copy(); pv["stratum"] = pv.stratum.str.replace("^CG ", "", regex=True)
+    HP = hp[["stratum", "N", "n_pos", "n_neg", "neg_vert", "neg_rib", "neg_pel", "pos_pel"]].merge(
+        pv[["stratum", "p15_imputed", "n_neg_roi", "p15_neg_z_roi", "pel_wins_neg_roi"]], on="stratum", how="left")
+    for c in ("neg_vert", "neg_rib", "neg_pel", "pos_pel", "p15_imputed", "pel_wins_neg_roi"): HP[c] = HP[c].map(lambda v: f"{v:.0%}" if pd.notna(v) else "–")
+    HP["p15_neg_z_roi"] = HP.p15_neg_z_roi.map(lambda v: f"{v:+.2f}" if pd.notna(v) else "–")
+    HP = HP.rename(columns={"stratum": "資料/層", "neg_vert": "陰性·椎體頭勝", "neg_rib": "陰性·肋骨頭勝", "neg_pel": "陰性·骨盆頭勝", "pos_pel": "陽性·骨盆頭勝",
+                            "p15_imputed": "缺骨盆 ROI 比例", "n_neg_roi": "有 ROI 陰性 N", "p15_neg_z_roi": "有 ROI 陰性 P15FT z", "pel_wins_neg_roi": "有 ROI 陰性·骨盆頭勝"})
+    LOCX = pd.crosstab(df.thin_bin, [df.LOC, df.scanner]).reindex(index=bins).fillna(0).astype(int)
+    LOCX.columns = [f"{l} {sc}" for l, sc in LOCX.columns]
+    ax = pd.read_csv(ROOT / "dicom_index/series.csv", usecols=["EXAMID", "ImageType", "SliceThickness"])
+    t_all = ax[ax.ImageType.fillna("").str.contains("AXIAL")].groupby("EXAMID").SliceThickness.min()
+    meta = pd.read_csv(ROOT / "report_meta_qwen.csv", usecols=["EXAMID", "abdomen"]).drop_duplicates("EXAMID").set_index("EXAMID").abdomen
+    ab3 = int(((t_all.map(thin_bin) == "最薄 3 mm") & (meta.reindex(t_all.index) == 1)).sum())
+    r5, r1, r3 = (R[(R.row == "fracture") & (R.stratum == g)].iloc[0] for g in ("最薄 5 mm", "最薄 1–1.25 mm", "最薄 ≤3 mm（3/2.5/1–1.25）"))
+    c3 = C[(C.row == "fracture") & (C.stratum == "Δ 最薄 ≤3 mm（3/2.5/1–1.25） − 最薄 5 mm")].iloc[0]
+    md = ["## A. 依每例「最薄 axial 序列」分層（使用者 11-10 指定）", "",
+          "- 定義：`dicom_index/series.csv` 中 ImageType 含 'AXIAL' 的序列，每個 EXAMID 取 min(SliceThickness)（與 10k 全體表相同：5 mm 5490 / 3 mm 1799 / 2.5 mm 983 / 3.75 mm 851 / 1–1.25 mm 781 / 其他 39 / 無 axial 57）。"
+          f"「其他」在評估集為 {', '.join(f'{k:g} mm×{v}' for k, v in oth.items())}（10k 全體另有 1 例 0.5 mm 也歸「其他」，所以全體是 39 不是 38）。",
+          "- **注意：最薄序列多半不是實際轉成 NIfTI 的主序列**（主序列 93% 是 5 mm，見下方交叉表），所以這個分層反映的是「該檢查是否另有薄切重建」（掃描協定／院區），不是模型看到的影像厚度。",
+          f"- 1–1.25 mm 層：評估集 {int(m1.sum())} 例，其中 {int((m1 & df.thin_hrct).sum())} 例的 ≤1.25 mm 序列是 HRCT（1.25/5、1/5、1/3 有間隙的肺窗序列），"
+          f"只有 {int((m1 & df.thin_contig).sum())} 例有 z_gap_med ≤ 1.5 mm 的連續薄切（10k 全體 31 例）。",
+          f"- 重點：整體骨折 最薄 5 mm {f(r5)}（{r5.n_pos}+/{r5.n_neg}−）、最薄 1–1.25 mm {f(r1)}（{r1.n_pos}+/{r1.n_neg}−）、最薄 ≤3 mm 合併 {f(r3)}（{r3.n_pos}+/{r3.n_neg}−）；"
+          f"≤3 − 5 的差：新 {c3.AUROC_new:+.3f} [{c3.new_lo:+.3f}, {c3.new_hi:+.3f}] p={c3.p_new:.2g}、C3 {c3.AUROC_C3:+.3f} [{c3.C3_lo:+.3f}, {c3.C3_hi:+.3f}] p={c3.p_C3:.2g}。",
+          "- 統計同下方 B 節（1,000 次 bootstrap，seed 0，此節用自己的亂數串；新−C3 配對；層間差非配對；`*` = 陽性或陰性 < 30）。", "",
+          "### A1. 骨折整體 × 最薄 axial", "", mtab(["fracture"], [g for g, _ in ST]).to_markdown(index=False), "",
+          "### A2. 各層 − 最薄 5 mm", "", ctab(["fracture"]).to_markdown(index=False), "",
+          "### A3. 子群 × 最薄 axial", "",
+          mtab(["fracture:vertebra", "fracture:sub_compression", "fracture:only_rib", "fracture:site_rib", "fracture:pelvic_ring", "fracture:site_other"], bins).to_markdown(index=False), "",
+          "### A4. 最薄 axial × 主序列厚度（評估集 6,970 例主 C+；N 欄 = 骨折 B cohort）", "", X.to_markdown(), "",
+          "- 「chest 主序列」欄 = 該層中實際轉成 NIfTI 的主序列是 chest 序列（`chest_series` flag）的例數。1–1.25 mm（HRCT）層有 "
+          f"{int((df.chest & m1).sum())}/{int(m1.sum())} 例主序列是 chest 序列（胸腹一起掃），所以此層的結果和 B 節「chest 序列」的結果高度重疊。", "",
+          "### A4b. 最薄 axial × 院區／機台（評估集）", "", LOCX.to_markdown(), "",
+          f"- 10k 全體中最薄 3 mm 的 1799 例只有 {ab3} 例是腹部檢查（report_meta abdomen=1），其餘不在評估集，所以評估集裡這一層很小。", "",
+          "### A5. 部位頭勝出與 P15FT 偏移（陰性；z 以 Merlin train 有 ROI 陰性計）", "", HP.to_markdown(index=False), "", "---", ""]
+    return {"R": R, "C": C, "HW": HW, "PV": PV, "X": Xo, "md": md}
+
+
 def main():
     rng = np.random.default_rng(SEED)
     df, sel = load()
@@ -299,7 +395,10 @@ def main():
     HW = head_wins(df, mf, CST)
     PV = pelvis_roi(df, mf, CST)
     AP = appendix(df, [ST[0], ST[1], ST[2], ST[3], ST[4], ST[5]], rng)
-    pd.concat([R, C, CT, HW, PV, AP], ignore_index=True).to_csv(BD / "eval_fracture_by_thickness.csv", index=False)
+    TH = thinnest_section(df, mf)
+    pd.concat([TH["R"].assign(section="thinnest_axial"), TH["C"].assign(section="thinnest_axial"), TH["HW"].assign(section="thinnest_axial"),
+               TH["PV"].assign(section="thinnest_axial"), TH["X"].assign(section="thinnest_axial"),
+               R, C, CT, HW, PV, AP], ignore_index=True).to_csv(BD / "eval_fracture_by_thickness.csv", index=False)
 
     # ---------------- sanity vs existing tables (point estimates and N are deterministic)
     T = pd.read_csv(BD / "eval_best_main_table.csv"); F = pd.read_csv(BD / "eval_fracture_newbest_table.csv")
@@ -355,7 +454,8 @@ def main():
         return pd.DataFrame(W)
 
     main_st = ["全部", "≤3 mm", "3.75 mm", "<5 mm", "5 mm", "≥7.5 mm"]
-    md = ["# CG10k 骨折：依主序列（C+）原始切片厚度分層（診斷用，未在 CG 上調參）", "",
+    md = ["# CG10k 骨折：依原始切片厚度分層（診斷用，未在 CG 上調參）", ""] + TH["md"] + [
+          "# B. 依主序列（實際轉成 NIfTI 的 C+ 序列）厚度分層", "",
           "## 先講結論", ""] + conclusions(R, C, CT, HW, PV) + ["",
           "## 方法", "",
           "- **主序列厚度**：`nifti_3mm/series_selection.csv` 是 `select_convert.py` 逐例記錄合併的表，直接記下實際轉成 NIfTI 的 SeriesInstanceUID、SliceThickness、"
