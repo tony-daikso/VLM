@@ -309,6 +309,8 @@ def main():
     report["val600"]["fill14_vs_official_merge_mismatch_cells"] = fill_check
     report["val600"]["fill14_groups"] = sorted(fill)
     report["val600"]["res"] = analyse("val600", ids, ref, preds, gen_sent)
+    report["implicit"] = implicit_thresholds(ids, ref, scores, cues, m4cats, lab_train, thr, preds,
+                                             M4 / "cue/cue_gt.json")
 
     # point 5 on val600: missing cue cells and how the generation treated them
     mc = {"n_cases_with_missing": 0, "n_cells": 0, "by_class": Counter(), "ref_cat": Counter(),
@@ -446,6 +448,144 @@ def table_break_class(res):
     return L
 
 
+def logit(v):
+    v = np.clip(np.asarray(v, float), 0.005, 0.995)
+    return np.log(v / (1 - v))
+
+
+def half_point(x, z):
+    """logistic P(z=1 | logit(x)) -> x where the fit crosses 0.5 (nan when degenerate / decreasing)."""
+    from sklearn.linear_model import LogisticRegression
+    x, z = np.asarray(x, float), np.asarray(z, int)
+    if len(set(z.tolist())) < 2:
+        return float("nan")
+    m = LogisticRegression(C=1e4, max_iter=10000).fit(logit(x)[:, None], z)
+    a, b = float(m.coef_[0, 0]), float(m.intercept_[0])
+    if a <= 0:
+        return float("nan")
+    return float(1 / (1 + np.exp(b / a)))
+
+
+def implicit_thresholds(ids, ref, scores, cues, m4cats, lab_train, thr, preds, cue_gt_path):
+    """Hypothesis: greedy decoding = implicit cut at P(doctor writes positive) 0.5, above t_f1.
+    implicit  : logistic P(generated positive | cue value printed in the prompt) on val600 cells with a cue, 0.5 point.
+    calib05   : logistic P(train label positive | train OOF score) on TRAIN only (owl binary, unclear excluded), 0.5 point.
+    mid_rate  : share written positive among val600 cells with t_f1 <= cue < 0.5.
+    boundary  : share of cells (score not missing) with |score - t_f1| <= 0.1 among the gt / oof break and fix cells vs
+                among all scored, reference-labelled cells.
+    pools     : gt_dropout --cue-gt-map sample draws (cue_gt.json pools, train OOF): share of the pos pool in
+                [t, t+0.1) and of the neg pool in [t-0.1, t)."""
+    out = {"implicit": {}, "calib05": {}, "mid_rate": {}, "boundary": {}, "pools": {}}
+    for d in DISEASES:
+        xs, zs = [], []
+        for c, L in lab_train.items():
+            s = scores.get(c, {}).get(d)
+            y = 1 if L[d] in POS else 0 if (L[d] in NEG_EXPLICIT or L[d] == "not_mentioned") else None
+            if s is None or y is None:
+                continue
+            xs.append(s)
+            zs.append(y)
+        out["calib05"][d] = {"t": half_point(xs, zs), "n": len(xs), "n_pos": int(sum(zs))}
+    for g in GROUPS:
+        out["implicit"][g], out["mid_rate"][g] = {}, {}
+        for d in DISEASES:
+            xs, zs = [], []
+            for c in ids:
+                v = cues[g][c]["cue"].get(d)
+                if v is None:
+                    continue
+                xs.append(v)
+                zs.append(int(m4cats[g][c][d][1] in POS))
+            xs, zs = np.array(xs), np.array(zs)
+            out["implicit"][g][d] = {"t": half_point(xs, zs), "n_gen_pos": int(zs.sum())}
+            mk = (xs >= thr[d]) & (xs < 0.5)
+            out["mid_rate"][g][d] = {"n": int(mk.sum()), "pos": int(zs[mk].sum())}
+    y = np.array([[ref_owl(ref[c][d]) for d in DISEASES] for c in ids])
+    S = np.array([[np.nan if scores[c][d] is None else scores[c][d] for d in DISEASES] for c in ids])
+    T = np.array([thr[d] for d in DISEASES])[None, :]
+    ok = ~np.isnan(y)
+    near = np.abs(S - T) <= 0.1
+    pc = preds["classifier"]
+    base = ok & ~np.isnan(S)
+    out["boundary"]["all_cells"] = {"n": int(base.sum()), "near": int((near & base).sum())}
+    out["boundary"]["clf_pos_cells"] = {"n": int((base & pc).sum()), "near": int((near & base & pc).sum())}
+    for g in GROUPS:
+        pg = preds[g]
+        for kind, mk in (("break", ok & (pc != pg) & (pg != (y == 1))), ("fix", ok & (pc != pg) & (pg == (y == 1)))):
+            sc = mk & ~np.isnan(S)
+            out["boundary"][f"{g}_{kind}"] = {"n": int(mk.sum()), "n_scored": int(sc.sum()), "near": int((near & sc).sum()),
+                                             "by_class": {d: [int(sc[:, k].sum()), int((near & sc)[:, k].sum())]
+                                                          for k, d in enumerate(DISEASES)}}
+    # classifier-positive & right cells the generation did not write positive: where do their scores sit?
+    for g in GROUPS:
+        mk = ok & pc & ~preds[g] & (y == 1) & ~np.isnan(S)
+        v = S[mk]
+        t = np.broadcast_to(T, S.shape)[mk]
+        out["boundary"][f"{g}_fnbands"] = {"n": int(mk.sum()), "t_to_t+0.1": int(((v >= t) & (v < t + 0.1)).sum()),
+                                          "t+0.1_to_0.5": int(((v >= t + 0.1) & (v < 0.5)).sum()),
+                                          "ge_0.5": int((v >= np.maximum(0.5, t + 0.1)).sum())}
+    if Path(cue_gt_path).exists():
+        pools = json.load(open(cue_gt_path))["pools"]          # train OOF values only (labels / ids not used)
+        for d in DISEASES:
+            p, n = np.array(pools[d]["pos"]), np.array(pools[d]["neg"])
+            out["pools"][d] = {"n_pos": len(p), "pos_near": int(((p >= thr[d]) & (p < thr[d] + 0.1)).sum()),
+                               "pos_median": float(np.median(p)), "n_neg": len(n),
+                               "neg_near": int(((n >= thr[d] - 0.1) & (n < thr[d])).sum()),
+                               "neg_median": float(np.median(n))}
+    return out
+
+
+def render_implicit(I, thr):
+    L = ["## 追加驗證：greedy 解碼的隱含門檻 vs t_f1", "",
+         "- 隱含門檻：val600 有提示值的格子，logistic 擬合 P(生成被 Qwen 判陽 | 提示值)（自變數取 logit），取 0.5 交叉點；"
+         "「—」表示該組該類生成陽性太少或擬合退化。",
+         "- 校準 0.5 點：只用 train OOF 分數與 train 標籤（owl 定義，unclear 不計）擬合 P(標籤陽 | 分數) 的 0.5 交叉點。",
+         "- 中間帶寫陽：提示值落在 [t_f1, 0.5) 的格子中被寫成陽性的比例（陽/格數）。", "",
+         "| 疾病 | t_f1 | 校準 0.5 點（train） | 隱含 U-oof | 隱含 T-oof | 隱含 U-gt | 隱含 T-gt | 中間帶寫陽 U-oof | T-oof | U-gt | T-gt |",
+         "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for d in DISEASES:
+        mr = lambda g: (f"{I['mid_rate'][g][d]['pos']}/{I['mid_rate'][g][d]['n']}"  # noqa: E731
+                        if I["mid_rate"][g][d]["n"] else "—")
+        L.append(f"| {ZH[d]} | {thr[d]:.3f} | {f3(I['calib05'][d]['t'])} | "
+                 + " | ".join(f3(I["implicit"][g][d]["t"]) for g in ("U_oof", "T_oof", "U_gt", "T_gt")) + " | "
+                 + " | ".join(mr(g) for g in ("U_oof", "T_oof", "U_gt", "T_gt")) + " |")
+    med = lambda v: float(np.nanmedian(v))  # noqa: E731
+    L.append(f"| 中位數 | {med([thr[d] for d in DISEASES]):.3f} | {f3(med([I['calib05'][d]['t'] for d in DISEASES]))} | "
+             + " | ".join(f3(med([I['implicit'][g][d]['t'] for d in DISEASES])) for g in ("U_oof", "T_oof", "U_gt", "T_gt"))
+             + " | " + " | ".join(
+                 f"{sum(I['mid_rate'][g][d]['pos'] for d in DISEASES)}/{sum(I['mid_rate'][g][d]['n'] for d in DISEASES)}"
+                 for g in ("U_oof", "T_oof", "U_gt", "T_gt")) + " |")
+    B_ = I["boundary"]
+    pct = lambda a, b: f"{a}/{b}（{100 * a / b:.0f}%）" if b else "—"  # noqa: E731
+    L += ["", "改錯／改對格（相對分類器）中，分數落在 t_f1 ±0.1 的比例（分數缺漏的格子不計）：", "",
+          "| 對照 | 格數 | 在 t_f1 ±0.1 內 |", "|---|---|---|",
+          f"| 所有有分數、參考非 unclear 的格子 | {B_['all_cells']['n']} | {pct(B_['all_cells']['near'], B_['all_cells']['n'])} |",
+          f"| 分類器判陽的格子 | {B_['clf_pos_cells']['n']} | {pct(B_['clf_pos_cells']['near'], B_['clf_pos_cells']['n'])} |"]
+    for g in ("U_gt", "T_gt", "U_oof", "T_oof"):
+        for kind, zh in (("break", "改錯"), ("fix", "改對")):
+            x = B_[f"{g}_{kind}"]
+            L.append(f"| {nm(g)} {zh} | {x['n_scored']} | {pct(x['near'], x['n_scored'])} |")
+    L += ["", "分類器判陽且正確、生成沒寫成陽性的格子（改錯中「漏陽」那一類），依分數所在區間：", "",
+          "| 組別 | 格數 | [t_f1, t_f1+0.1) | [t_f1+0.1, 0.5) | ≥ 0.5 |", "|---|---|---|---|---|"]
+    for g in ("U_oof", "T_oof", "U_gt", "T_gt"):
+        x = B_[f"{g}_fnbands"]
+        L.append(f"| {nm(g)} | {x['n']} | {pct(x['t_to_t+0.1'], x['n'])} | {pct(x['t+0.1_to_0.5'], x['n'])} | "
+                 f"{pct(x['ge_0.5'], x['n'])} |")
+    L += ["", "gt 組改錯格在 ±0.1 內的類別分布（在帶內格數/改錯格數）："]
+    for g in ("U_gt", "T_gt"):
+        bc = B_[f"{g}_break"]["by_class"]
+        L.append(f"- {nm(g)}：" + "、".join(f"{ZH[d]} {bc[d][1]}/{bc[d][0]}" for d in DISEASES if bc[d][0]))
+    if I["pools"]:
+        L += ["", "gt_dropout `--cue-gt-map sample` 的抽樣池（cue_gt.json，train OOF 分數，兩位小數）：", "",
+              "| 疾病 | t_f1 | 陽性池 n | 陽性池中位數 | 陽性池在 [t, t+0.1) | 陰性池 n | 陰性池中位數 | 陰性池在 [t−0.1, t) |",
+              "|---|---|---|---|---|---|---|---|"]
+        for d in DISEASES:
+            p = I["pools"][d]
+            L.append(f"| {ZH[d]} | {thr[d]:.3f} | {p['n_pos']} | {p['pos_median']:.2f} | {pct(p['pos_near'], p['n_pos'])} | "
+                     f"{p['n_neg']} | {p['neg_median']:.2f} | {pct(p['neg_near'], p['n_neg'])} |")
+    return L
+
+
 def render_md(R):
     v = R["val600"]
     res = v["res"]
@@ -496,6 +636,8 @@ def render_md(R):
         L.append("尚無任何一組完成完整 val 評估（eval/results_cue/*_valfull 無 per_case_categories），待補。")
     for g, r in R["valfull"].items():
         L += [f"### {nm(g)}（{r['n_cases']} 例）", ""] + table_main(r) + [""] + table_class(r) + [""] + table_decomp(r) + [""]
+    if "implicit" in R:
+        L += [""] + render_implicit(R["implicit"], R["thresholds_t_f1"])
     return "\n".join(L) + "\n"
 
 
