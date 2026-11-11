@@ -16,7 +16,10 @@ ROWS = [("macro 敏感度", "sens"), ("macro 特異度", "spec"), ("macro F1（o
 # --attr-first (agent G, for the attribute-focused unit-cue experiments): these attribute rows first, then the rest
 ATTR_FIRST = [("腎水腫側別", "attr:hydronephrosis:side"), ("骨折椎體節段", "attr:fracture:levels"),
               ("骨折部位", "attr:fracture:sites"), ("腹主動脈瘤直徑（±0.3 cm）", "attr:abdominal_aortic_aneurysm:diameter_cm"),
-              ("骨折椎體壓迫性", "attr:fracture:vertebral_compression"), ("腎水腫程度", "attr:hydronephrosis:grade")]
+              ("骨折椎體壓迫性", "attr:fracture:vertebral_compression"), ("腎水腫程度", "attr:hydronephrosis:grade"),
+              # agent H (11-12, A+ grade cue): grade attributes (exact grade; both-positive cases, ref grade stated)
+              ("脂肪肝程度", "attr:hepatic_steatosis:grade"), ("腹水量", "attr:ascites:amount"),
+              ("動脈粥狀硬化程度", "attr:atherosclerosis:grade")]
 
 
 def summarize(m):

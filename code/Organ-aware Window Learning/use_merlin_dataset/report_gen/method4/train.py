@@ -253,6 +253,10 @@ def main():
                     help="improvement 2: improve/unit_probe.py unit_cue.json -> train rows get the unit-level probe line "
                          "rebuilt from report side / level labels (data must come from improve/build_unit_data.py)")
     ap.add_argument("--unit-cue-dropout", type=float, default=0.3, help="--unit-cue-gt: per-part drop probability")
+    ap.add_argument("--unit-cue-grades", action="store_true",
+                    help="A+: with --unit-cue-gt (improve/pil_cue.py json), also rebuild the grade line (steatosis / "
+                         "ascites / atherosclerosis moderate+ probability) for the diseases whose gt-rebuilt cue is "
+                         "positive (data from improve/build_unit_data.py --grade-cue-gt)")
     ap.add_argument("--log-every", type=int, default=20)
     args = ap.parse_args()
     if args.stage == 1 and args.text_only:
@@ -261,6 +265,8 @@ def main():
         sys.exit("--aux-unit-loss / --resampler-groups need image tokens")
     if args.aux_unit_loss and not args.unit_labels_dir:
         sys.exit("--aux-unit-loss needs --unit-labels-dir")
+    if args.unit_cue_grades and not args.unit_cue_gt:
+        sys.exit("--unit-cue-grades needs --unit-cue-gt")
     if args.cue_source == "gt_dropout" and not args.cue_gt:
         sys.exit("--cue-source gt_dropout needs --cue-gt (build_cue_gt.py output)")
     args.lr = args.lr or (1e-3 if args.stage == 1 else 2e-4)
@@ -289,7 +295,8 @@ def main():
                       cue_gt=CueGT(args.cue_gt, args.cue_dropout, args.cue_gt_map, args.cue_gt_hi, args.cue_gt_lo,
                                   args.cue_gt_unclear)
                       if args.cue_source == "gt_dropout" else None, meas_dropout=args.meas_dropout,
-                      unit_cue=UnitCueGT(args.unit_cue_gt, args.unit_cue_dropout) if args.unit_cue_gt else None)
+                      unit_cue=UnitCueGT(args.unit_cue_gt, args.unit_cue_dropout, args.unit_cue_grades)
+                      if args.unit_cue_gt else None)
     ds_va = M4Dataset(Path(args.data) / "val.jsonl", tk, use_img, args.max_len, limit=args.val_n,
                       feat_root=feat_root, backbone=args.backbone)
     col = functools.partial(collate, pad_id=tk.pad_token_id, train=True)

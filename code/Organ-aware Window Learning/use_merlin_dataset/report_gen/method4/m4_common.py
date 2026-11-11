@@ -315,3 +315,64 @@ def gt_unit_values(lab, oof, pools, thr, rng, dropout):
                 vals.append(pool[min(int(rng.random() * len(pool)), len(pool) - 1)])
         out[part] = vals
     return out
+
+
+# ---- A+ (agent H, 11-12): grade probe line (Pillar-0 option A+ stacks: hepatic steatosis / ascites / atherosclerosis
+# "moderate or worse" probability). Only present in prompts built by improve/build_unit_data.py --grade-cue-gt; every
+# function below is a no-op for other prompts. A grade item is shown only when its disease's classifier cue (the
+# "Image classifier probabilities" line of the same prompt) is at or above the method-1 cue threshold, so train
+# (gt-rebuilt cue) and inference (classifier cue) use the same rule.
+GRADE_PREFIX = "Grade probe scores (0-1): "
+GRADE_KEYS = [("hs_grade", "hepatic_steatosis", "hepatic steatosis moderate or severe"),
+              ("asc_amount", "ascites", "ascites moderate or large"),
+              ("ath_grade", "atherosclerosis", "atherosclerosis moderate or severe")]
+
+
+def grade_keys_shown(prompt, cue_thr):
+    """grade keys whose disease cue in `prompt` is >= cue_thr[disease] (a missing / dropped cue -> not shown)."""
+    cue, _ = parse_cue(prompt)
+    return [k for k, d, _ in GRADE_KEYS if cue.get(d) is not None and cue[d] >= cue_thr[d]]
+
+
+def render_grade_line(vals):
+    """{grade key: value or None} -> the grade line ("" when no key has a value), keys in GRADE_KEYS order."""
+    items = [f"{txt} {vals[k]:.2f}" for k, _, txt in GRADE_KEYS if vals.get(k) is not None]
+    return (GRADE_PREFIX + "; ".join(items) + ".") if items else ""
+
+
+def replace_grade_line(prompt, line):
+    """put `line` in place of the grade line (or right after the unit line / classifier line / "<image>" line when
+    absent); an empty line removes it."""
+    lines = prompt.split("\n")
+    i = next((k for k, ln in enumerate(lines) if ln.startswith(GRADE_PREFIX)), None)
+    if i is not None:
+        if line:
+            lines[i] = line
+        else:
+            del lines[i]
+    elif line:
+        j = next((k for k, ln in enumerate(lines) if ln.startswith(UNIT_PREFIX)),
+                 next((k for k, ln in enumerate(lines) if ln.startswith(CUE_PREFIX)), lines.index("<image>")))
+        lines.insert(j + 1, line)
+    return "\n".join(lines)
+
+
+def grade_line_from_scores(prompt, scores, cue_thr):
+    """deterministic grade line (val / inference, and the stored train prompt): the case's own grade scores for the
+    keys whose disease cue is positive in `prompt`."""
+    return render_grade_line({k: scores.get(k) for k in grade_keys_shown(prompt, cue_thr)})
+
+
+def gt_grade_values(keys, lab, oof, pools, rng):
+    """train-only gt cue for the grade line (keys = grade_keys_shown of the gt-rebuilt prompt). Grade label 1 / 0 ->
+    value drawn from the train OOF pool on the label's side of the grade threshold; null (grade not written) -> the
+    case's own OOF score. One rng draw per labelled shown key, none otherwise."""
+    out = {}
+    for k in keys:
+        y, s = lab.get(k), oof.get(k)
+        if y is None:
+            out[k] = s
+        else:
+            pool = pools[k]["pos" if y else "neg"]
+            out[k] = pool[min(int(rng.random() * len(pool)), len(pool) - 1)]
+    return out

@@ -10,8 +10,8 @@ import torch
 from torch.utils.data import Dataset
 
 from m4_common import (BACKBONES, DISEASES, LEVEL_RE_TXT, LR_PAIRS, N_IMG_TOKENS, NUM_UNIT_RE, SYSTEM,
-                       drop_measurements, gt_cue_probs, gt_unit_values, parse_cue, render_unit_line, replace_cue,
-                       replace_unit_line, swap_lr)
+                       drop_measurements, grade_keys_shown, gt_cue_probs, gt_grade_values, gt_unit_values, parse_cue,
+                       render_grade_line, render_unit_line, replace_cue, replace_grade_line, replace_unit_line, swap_lr)
 
 
 def lr_permutation(meta_rows):
@@ -73,10 +73,17 @@ class UnitCueGT:
     labels (improve/unit_probe.py unit_cue.json, TRAIN labels only) with per-part dropout; rows need "unit_scores"
     (train OOF probe scores, written by improve/build_unit_data.py)."""
 
-    def __init__(self, path, dropout=0.3):
+    def __init__(self, path, dropout=0.3, grades=False):
         z = json.load(open(path))
         self.labels, self.pools, self.thresholds = z["labels_train"], z["pools"], z["thresholds"]
         self.dropout = dropout
+        # A+ (--unit-cue-grades, agent H 11-12): also rebuild the grade line; needs "grade_cue_thr" ({disease: method-1
+        # cue threshold}, written by improve/pil_cue.py) and grade pools / labels in the same file. Off -> old behaviour.
+        self.grade_cue_thr = None
+        if grades:
+            if "grade_cue_thr" not in z:
+                raise SystemExit(f"{path}: --unit-cue-grades needs 'grade_cue_thr' (improve/pil_cue.py output)")
+            self.grade_cue_thr = z["grade_cue_thr"]
 
     def line(self, row, rng):
         if row["case_id"] not in self.labels:
@@ -84,6 +91,11 @@ class UnitCueGT:
         v = gt_unit_values(self.labels[row["case_id"]], row["unit_scores"], self.pools, self.thresholds, rng,
                            self.dropout)
         return render_unit_line(v["kid"], v["vert"])
+
+    def grade_line(self, row, prompt, rng):
+        """grade line for the (already gt-rebuilt) prompt: shown keys follow its classifier line."""
+        keys = grade_keys_shown(prompt, self.grade_cue_thr)
+        return render_grade_line(gt_grade_values(keys, self.labels[row["case_id"]], row["grade_scores"], self.pools, rng))
 
 
 class M4Dataset(Dataset):
@@ -111,6 +123,8 @@ class M4Dataset(Dataset):
         self.unit_cue = unit_cue if train else None   # UnitCueGT or None (None = the prompt's own probe line)
         if self.unit_cue is not None and any(r["split"] != "train" for r in self.rows):
             raise SystemExit("unit gt cues are train-only")
+        if self.unit_cue is not None and self.unit_cue.grade_cue_thr is None and any("grade_scores" in r for r in self.rows):
+            raise SystemExit("rows carry grade_scores (grade line): pass --unit-cue-grades so it follows the gt cue")
         if self.cue_gt is not None:
             bad = [r["case_id"] for r in self.rows if r["split"] != "train"]
             if bad:
@@ -161,6 +175,8 @@ class M4Dataset(Dataset):
                 cue_info.update(n_meas=n_m, n_meas_dropped=k_m)
         if self.unit_cue is not None:
             prompt = replace_unit_line(prompt, self.unit_cue.line(r, random))
+            if self.unit_cue.grade_cue_thr is not None:
+                prompt = replace_grade_line(prompt, self.unit_cue.grade_line(r, prompt, random))
         if flip:
             prompt, target = swap_lr(prompt), swap_lr(target)
         p = self.tk(chatml(prompt, self.use_image, self.n_img, self.backbone), add_special_tokens=False)["input_ids"]
