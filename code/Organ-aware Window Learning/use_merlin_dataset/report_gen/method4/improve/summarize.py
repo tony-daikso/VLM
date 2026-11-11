@@ -2,7 +2,7 @@
 """evaluate.py metrics.json -> one summary column (aggregate numbers only, no ids / text), the rows used in
 queue_cue/RESULTS_interim.md: macro sens / spec / F1 and micro F1 (owl definition, strict), critical-error and
 omission rate, natural FN / FP cue concordance, and the attribute accuracies (both-positive cases).
-usage: python summarize.py <name>=<metrics.json> [...] [--per-disease] [--md]"""
+usage: python summarize.py <name>=<metrics.json> [...] [--per-disease] [--attr-first]"""
 import json
 import math
 import sys
@@ -13,6 +13,10 @@ ROWS = [("macro 敏感度", "sens"), ("macro 特異度", "spec"), ("macro F1（o
         ("腎水腫側別", "attr:hydronephrosis:side"), ("骨折椎體節段", "attr:fracture:levels"),
         ("骨折部位", "attr:fracture:sites"), ("腸阻塞類型", "attr:bowel_obstruction:type"),
         ("ROUGE-L", "rouge"), ("BERTScore F", "bert")]
+# --attr-first (agent G, for the attribute-focused unit-cue experiments): these attribute rows first, then the rest
+ATTR_FIRST = [("腎水腫側別", "attr:hydronephrosis:side"), ("骨折椎體節段", "attr:fracture:levels"),
+              ("骨折部位", "attr:fracture:sites"), ("腹主動脈瘤直徑（±0.3 cm）", "attr:abdominal_aortic_aneurysm:diameter_cm"),
+              ("骨折椎體壓迫性", "attr:fracture:vertebral_compression"), ("腎水腫程度", "attr:hydronephrosis:grade")]
 
 
 def summarize(m):
@@ -55,7 +59,8 @@ def main():
     cols = [(a.split("=", 1)[0], summarize(json.load(open(a.split("=", 1)[1])))) for a in args]
     print("| 指標 | " + " | ".join(n for n, _ in cols) + " |")
     print("|---|" + "---|" * len(cols))
-    for label, key in ROWS:
+    rows = ATTR_FIRST + [r for r in ROWS if r[1] not in {k for _, k in ATTR_FIRST}] if "--attr-first" in sys.argv else ROWS
+    for label, key in rows:
         print(f"| {label} | " + " | ".join(fmt(s.get(key), key) for _, s in cols) + " |")
     if "--per-disease" in sys.argv:
         print("\n| 疾病 | " + " | ".join(f"{n} 敏感度/特異度/F1/關鍵錯誤" for n, _ in cols) + " |")

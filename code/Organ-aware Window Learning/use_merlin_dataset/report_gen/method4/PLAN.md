@@ -352,4 +352,5 @@
 
 - 佇列：`improve/gpu_queue.sh`（讀 `m4/improve/jobs.txt`，一次一個 GPU 工作，NaN／停滯看門狗）、`improve/eval_queue.sh`（讀 `evals.txt`，自己的通道 A6000:18023 → Spark :8003，8 並行）；`improve/summarize.py` 把 metrics.json 轉成 RESULTS 表的列。
 - 快速代理評估（agent G）：`improve/proxy_eval.py`（mt_lib 規則取代 Qwen 反抽，其餘沿用 evaluate.py，CPU 每組約 10 秒，輸出 `m4/eval/results_proxy/`）、`improve/proxy_run.sh`（與 eval_queue 同參數）、`improve/proxy_calib.py`（與 Qwen 評估比對：逐格一致、組間差與排序、各類偏差）。只用於篩選，正式數字以 Qwen 為準。
+- 屬性實驗（agent G）：`improve/build_v3_data.py`（T_unit_gt_v3 資料：m4ext 骨密度 HU、左右腎 probe＋flcc 疊加〔train OOF〕、椎體幾何行，輸出 `m4/improve/data_unit_v3`、`probe_v3/unit_cue_v3.json`）、`improve/strip_unit_line.py`（U_gt_aux 資料：拿掉逐單元提示行）；`summarize.py --attr-first`。
 - 結果見 `queue_cue/RESULTS_interim.md`「改進實驗」段落。
