@@ -351,4 +351,5 @@
 | 改進項 2：逐單元結構化提示 | 凍結 OWL 單元 token 訓練輕量 probe：每顆腎（organ3 腎 5 token＋腎竇 crop 40 token）的腎水腫、T8–L5 每節椎體（vert15 6＋bone3 6 token）的骨折；train 5-fold OOF（腎水腫用 region_units/hydronephrosis 的 fold、骨折用 sitewise 外層 fold），val 用全 train refit；logistic 與小 MLP 依 train OOF AUROC 擇一。prompt 在分類器那一行後加「Unit-level probe scores」一行；gt 版訓練時該行由報告側別／節段標籤重建（從 train OOF 分數池抽、每部分 dropout 0.3），其餘同 T-gt | `improve/unit_probe.py`、`improve/build_unit_data.py`、`train.py --unit-cue-gt unit_cue.json --unit-cue-dropout 0.3`（預設關閉；關閉時與原本逐位元相同） |
 
 - 佇列：`improve/gpu_queue.sh`（讀 `m4/improve/jobs.txt`，一次一個 GPU 工作，NaN／停滯看門狗）、`improve/eval_queue.sh`（讀 `evals.txt`，自己的通道 A6000:18023 → Spark :8003，8 並行）；`improve/summarize.py` 把 metrics.json 轉成 RESULTS 表的列。
+- 快速代理評估（agent G）：`improve/proxy_eval.py`（mt_lib 規則取代 Qwen 反抽，其餘沿用 evaluate.py，CPU 每組約 10 秒，輸出 `m4/eval/results_proxy/`）、`improve/proxy_run.sh`（與 eval_queue 同參數）、`improve/proxy_calib.py`（與 Qwen 評估比對：逐格一致、組間差與排序、各類偏差）。只用於篩選，正式數字以 Qwen 為準。
 - 結果見 `queue_cue/RESULTS_interim.md`「改進實驗」段落。

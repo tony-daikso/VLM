@@ -26,11 +26,12 @@ def summarize(m):
     s["critomit"] = ((al["critical"] + al["omitted"]) / al["ref_pos"], al["critical"] + al["omitted"], al["ref_pos"])
     ct = m.get("cue_test") or {}
     for k, key in (("natfn", "nat_fn"), ("natfp", "nat_fp")):
-        n = sum(r[key]["n"] for r in ct.get("rows", []) if key in r and not str(r.get("disease", "")).startswith("ALL"))
-        c = sum(r[key]["consistent"] for r in ct.get("rows", []) if key in r and not str(r.get("disease", "")).startswith("ALL"))
+        n = sum(r[key].get("n", 0) for r in ct.get("rows", []) if key in r and not str(r.get("disease", "")).startswith("ALL"))
+        c = sum(r[key].get("consistent", 0) for r in ct.get("rows", []) if key in r and not str(r.get("disease", "")).startswith("ALL"))
         s[k] = (c / n, c, n) if n else None
     for a in m["attributes"]:
-        s[f"attr:{a['disease']}:{a['field']}"] = (a["acc"], round(a["acc"] * a["both_pos"]), a["both_pos"])
+        s[f"attr:{a['disease']}:{a['field']}"] = (a["acc"], round(a["acc"] * a["ref_stated"]) if a["acc"] == a["acc"] else 0,
+                                                 a["ref_stated"])
     st = m.get("style") or {}
     s["rouge"], s["bert"] = st.get("ROUGE-L"), st.get("BERTScore_F")
     s["_per"] = {p["疾病"]: (p["sens"], p["spec"], p["F1"]) for p in pr}
