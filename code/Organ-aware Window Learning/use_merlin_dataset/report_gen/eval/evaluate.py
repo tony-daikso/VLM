@@ -34,7 +34,7 @@ Metrics (see README.md)
       itself was wrong (natural FN / FP cues). Classes with a weaker classifier are marked.
 
 Qwen requests are cached (--cache, keyed by prompt md5 + model + user message), so re-running is free.
-Concurrency is capped at MAX_JOBS = 8 (shared endpoints; use <=4 when another project is using the server).
+Concurrency is capped at MAX_JOBS = 64 (Spark merlin-qwen-fp8 max-num-seqs since 11-11; use <=4 when another project shares the server).
 The test split is refused unless --allow-test (only after the user unlocks test).
 
 usage (Mac, Qwen through an ssh tunnel: ssh -N -L 18003:127.0.0.1:8003 sparks):
@@ -81,7 +81,7 @@ RENDER_ORDER = ["hepatic_steatosis", "biliary_ductal_dilation", "gallstones", "s
 POS = {"yes", "probably_yes"}
 NEG_EXPLICIT = {"no", "probably_no"}
 CATS = ["yes", "probably_yes", "unclear", "probably_no", "no", "not_mentioned"]
-MAX_JOBS = 8  # shared endpoints: <=4 while CG used them; 8 allowed on Spark merlin-qwen-fp8 (11-09)
+MAX_JOBS = 64  # shared endpoints: <=4 while CG used them; 8 on Spark merlin-qwen-fp8 (11-09); 64 = its max-num-seqs since 11-11
 
 # attribute checks: (disease, field, kind, arg)
 #   cat: exact; ord: exact + within one step (arg = order); num: |diff| <= arg; set: exact set; levels: regex
@@ -515,6 +515,11 @@ def main():
     ap.add_argument("--bertscore-threads", type=int, default=4)
     ap.add_argument("--out-root", default=str(DATA_EVAL / "results"))
     ap.add_argument("--cue-log", default="", help="infer.py <out>.cues.jsonl (error-cue test; needs Qwen extraction)")
+    ap.add_argument("--extract-from", default="", help="merge scoring: Qwen-extract the texts of THIS generation file "
+                                                       "(e.g. the original before method4/fill14.py) instead of --gen; "
+                                                       "style metrics still use --gen")
+    ap.add_argument("--ext-override", default="", help="merge scoring: fill14 <out>.merge_ext.jsonl; its per-finding "
+                                                       "answers replace the extracted ones")
     a = ap.parse_args()
 
     out = Path(a.out_root) / a.name
@@ -569,7 +574,23 @@ def main():
                            "url": a.url, "model_tag": a.qwen_model_tag, "max_tokens": a.max_tokens,
                            "temperature": 0, "thinking": False}
         meta = {r["study id"]: r for r in csv.DictReader(open(a.meta))}
-        ext = extract_all([(c, gen[c][0]) for c in ids], d14, meta, a, pm)
+        if a.extract_from:
+            xsrc = {case_id_of(r): gen_text(r)[0] for r in read_jsonl(a.extract_from)}
+            missing = [c for c in ids if c not in xsrc]
+            if missing:
+                sys.exit(f"--extract-from lacks {len(missing)} generated cases")
+            ext = extract_all([(c, xsrc[c]) for c in ids], d14, meta, a, pm)
+            metrics["qwen"]["extract_from"] = str(a.extract_from)
+        else:
+            ext = extract_all([(c, gen[c][0]) for c in ids], d14, meta, a, pm)
+        if a.ext_override:
+            n_over = 0
+            for r in read_jsonl(a.ext_override):
+                c = case_id_of(r)
+                if c in ext and r.get("overrides"):
+                    ext[c] = {**ext[c], **r["overrides"]}   # copy: cache rows stay untouched
+                    n_over += len(r["overrides"])
+            metrics["qwen"]["ext_override"] = {"file": str(a.ext_override), "n_findings_overridden": n_over}
         ok_ids = [c for c in ids if c in ext and c in labels]
         metrics["qwen"]["n_extracted_ok"] = len(ok_ids)
         metrics["qwen"]["n_failed_or_unlabelled"] = len(ids) - len(ok_ids)

@@ -4,7 +4,8 @@
 # gen  : m4/gen_cue/<g>/val_full.jsonl (+ val_full.cues.jsonl from infer.py --cue-gt)
 # out  : m4/eval/results_cue/<g>_valfull/{metrics.json, report.md, per_case_categories.jsonl}; log logs/evalfull_<g>.log
 # state: queue_cue/state/<g>.eval_full_ok | <g>.eval_full_failed ; STATUS.log lines "[evalfull]"
-# Qwen : Spark merlin-qwen-fp8 via tunnel A6000:18013 -> Spark 127.0.0.1:8003 (client only, jobs 8 = MAX_JOBS);
+# Qwen : Spark merlin-qwen-fp8 via tunnel A6000:18013 -> Spark 127.0.0.1:8003 (client only, jobs 40 by default;
+#        11-11: container rebuilt with --max-num-seqs 64 -> 24 slots left for other evaluations);
 #        shared cache m4/eval/qwen_extract_cache.jsonl. A keeper loop re-opens the tunnel if ssh dies.
 #        If an arm ends with failed extractions, one more pass retries only those (ok rows come from the cache).
 # Stop : touch queue_cue/STOP (checked between arms; the running evaluate.py finishes its arm).
@@ -15,7 +16,7 @@ M4=$TONY/VLM/OWL/report_gen/m4
 Q=$M4/queue_cue
 PY=$TONY/tools/vllm-env/bin/python
 PORT=${EVAL_PORT:-18013}
-JOBS=${EVAL_JOBS:-8}
+JOBS=${EVAL_JOBS:-40}
 N_VAL=5055
 GROUPS_=${*:-"U_gt T_gt U_oof T_oof"}
 log() { echo "[$(date '+%m-%d %H:%M:%S')] [evalfull] $*" | tee -a "$Q/STATUS.log"; }
