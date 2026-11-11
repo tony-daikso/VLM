@@ -339,3 +339,16 @@
 | `build_data.sh` | Mac 端：輸入傳到 A6000、在 A6000 跑 build_jsonl.py |
 | `start_stage1.sh` | A6000 端：Stage 1 啟動腳本（nohup，log 在 `m4/logs/`；有前置檢查，使用者同意後才執行） |
 | `gpu_smoke.py` | 真 backbone + 合成資料的 GPU 短測（顯存、每 step 秒數、每 epoch 估計） |
+
+## 8. 改進實驗（agent F，2026-11-11 起；A6000 依序；test 未讀取）
+
+程式在 `improve/`（A6000 複本 `m4/code_f/`，與 agent E 使用的 `code_v2/` 分開）；資料、產物在 A6000 `m4/improve/`、`m4/gen_f/`、`m4/eval/results_f/`；Qwen 快取 `m4/eval/qwen_extract_cache_F.jsonl`（不和 E 共寫）。
+
+| 實驗 | 做法 | 開關／程式 |
+|---|---|---|
+| 改進項 4：偏敏感度門檻（只推論） | U-gt、T-gt 原權重，val600 推論時把分類器那一行改寫：原始分數 ≥ 新門檻 → 顯示成 ≥ t_f1 的數值（模型學到的陽性那一側），< 新門檻 → < t_f1；單調分段線性。新門檻只用 train OOF 訂：s80（train 敏感度 ≥ .80）、s90（≥ .90）；方法一 1A 的陽性門檻 t_neg 就是 s95 | `improve/make_variants.py thresholds / remap` |
+| 改進項 3：U-nocue | 完全拿掉分類器那一行（量測、HU、年齡性別照給），接 lingshu7b_s1 Stage 1 adapter 跑 Stage 2 2 epoch | `make_variants.py nocue` → `train.py --data improve/data_nocue` |
+| 改進項 2：逐單元結構化提示 | 凍結 OWL 單元 token 訓練輕量 probe：每顆腎（organ3 腎 5 token＋腎竇 crop 40 token）的腎水腫、T8–L5 每節椎體（vert15 6＋bone3 6 token）的骨折；train 5-fold OOF（腎水腫用 region_units/hydronephrosis 的 fold、骨折用 sitewise 外層 fold），val 用全 train refit；logistic 與小 MLP 依 train OOF AUROC 擇一。prompt 在分類器那一行後加「Unit-level probe scores」一行；gt 版訓練時該行由報告側別／節段標籤重建（從 train OOF 分數池抽、每部分 dropout 0.3），其餘同 T-gt | `improve/unit_probe.py`、`improve/build_unit_data.py`、`train.py --unit-cue-gt unit_cue.json --unit-cue-dropout 0.3`（預設關閉；關閉時與原本逐位元相同） |
+
+- 佇列：`improve/gpu_queue.sh`（讀 `m4/improve/jobs.txt`，一次一個 GPU 工作，NaN／停滯看門狗）、`improve/eval_queue.sh`（讀 `evals.txt`，自己的通道 A6000:18023 → Spark :8003，8 並行）；`improve/summarize.py` 把 metrics.json 轉成 RESULTS 表的列。
+- 結果見 `queue_cue/RESULTS_interim.md`「改進實驗」段落。

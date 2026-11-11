@@ -208,7 +208,7 @@ def drop_measurements(prompt, p, rng):
     return "\n".join(lines), n, k
 
 
-def gt_cue_probs(y, pools, rng, dropout, gt_map="sample", hi=0.95, lo=0.02):
+def gt_cue_probs(y, pools, rng, dropout, gt_map="sample", hi=0.95, lo=0.02, unclear_cue=None):
     """--cue-source gt_dropout: report labels -> a cue dict in the OOF format.
     y: 14 values 1 / 0 / None (owl binarisation; None = unclear -> left out, like a missing OOF score).
     Each finding is dropped (left out) with probability `dropout`. gt_map:
@@ -216,10 +216,17 @@ def gt_cue_probs(y, pools, rng, dropout, gt_map="sample", hi=0.95, lo=0.02):
                threshold (pools[d]["pos"]); negative -> drawn from label-negative OOF scores below it (pools[d]["neg"]).
                The number looks like a real classifier output but is always on the label's side of the threshold.
       hard   : positive -> hi, negative -> lo.
+    unclear_cue: None (default) -> an unclear finding is left out (old behaviour; omission then flags "unclear");
+      {disease: classifier value} (--cue-gt-unclear oof, 11-11 fix) -> an unclear finding shows the case's own
+      classifier value from the prompt (train OOF), dropped with the same probability as labelled findings; left out
+      only when the classifier has no score either.
     Returns (probs, n_labelled, n_dropped)."""
     out, n, k = {}, 0, 0
     for d, v in zip(DISEASES, y):
         if v is None:
+            if unclear_cue is not None and unclear_cue.get(d) is not None:
+                if rng.random() >= dropout:
+                    out[d] = unclear_cue[d]
             continue
         n += 1
         if rng.random() < dropout:
@@ -250,3 +257,61 @@ def flip_cues(probs, thresholds, pools, p_pos2neg, p_neg2pos, rng):
             new[d] = pool[min(int(j * len(pool)), len(pool) - 1)]
             flips[d] = [v, new[d], "pos2neg" if pos else "neg2pos"]
     return new, flips
+
+
+# ---- improvement 2 (agent F, 11-11): unit-level probe line (per-kidney hydronephrosis, per-vertebra T8-L5 fracture).
+# Only present in prompts built by improve/build_unit_data.py; every function below is a no-op for other prompts.
+UNIT_PREFIX = "Unit-level probe scores (0-1): "
+UNIT_LEVELS = ["T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5"]
+
+
+def render_unit_line(kid, vert):
+    """kid: [right, left] or None (part left out); vert: [10] or None. A missing value inside a part -> unknown /
+    level left out. Returns "" when both parts are None."""
+    parts = []
+    if kid is not None:
+        parts += [f"{s} kidney hydronephrosis " + ("unknown" if v is None else f"{v:.2f}")
+                  for s, v in zip(("right", "left"), kid)]
+    if vert is not None:
+        lv = [f"{n} {v:.2f}" for n, v in zip(UNIT_LEVELS, vert) if v is not None]
+        parts.append("vertebral fracture " + (", ".join(lv) if lv else "unknown"))
+    return (UNIT_PREFIX + "; ".join(parts) + ".") if parts else ""
+
+
+def replace_unit_line(prompt, line):
+    """put `line` in place of the unit line (or right after the classifier line / "<image>" line when absent);
+    an empty line removes it."""
+    lines = prompt.split("\n")
+    i = next((k for k, ln in enumerate(lines) if ln.startswith(UNIT_PREFIX)), None)
+    if i is not None:
+        if line:
+            lines[i] = line
+        else:
+            del lines[i]
+    elif line:
+        j = next((k for k, ln in enumerate(lines) if ln.startswith(CUE_PREFIX)), lines.index("<image>"))
+        lines.insert(j + 1, line)
+    return "\n".join(lines)
+
+
+def gt_unit_values(lab, oof, pools, thr, rng, dropout):
+    """train-only gt cue for the unit line. lab: {"kid": [2 x 1/0/None], "vert": [10 x 1/0/None]} (report side / level,
+    case-negative -> all 0); oof: {"kid": [...], "vert": [...]} train OOF probe scores (None = no tokens).
+    Labelled unit -> value drawn from the train OOF pool on the label's side of the unit threshold; unlabelled unit ->
+    its own OOF score. Each part (kidneys, vertebrae) is left out with probability `dropout`."""
+    out = {}
+    for part, key in (("kid", "kidney"), ("vert", "vertebra")):
+        if rng.random() < dropout:
+            out[part] = None
+            continue
+        vals = []
+        for y, s in zip(lab[part], oof[part]):
+            if s is None:
+                vals.append(None)
+            elif y is None:
+                vals.append(s)
+            else:
+                pool = pools[key]["pos" if y else "neg"]
+                vals.append(pool[min(int(rng.random() * len(pool)), len(pool) - 1)])
+        out[part] = vals
+    return out

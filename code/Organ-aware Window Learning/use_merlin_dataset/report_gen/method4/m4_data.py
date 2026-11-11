@@ -10,7 +10,8 @@ import torch
 from torch.utils.data import Dataset
 
 from m4_common import (BACKBONES, DISEASES, LEVEL_RE_TXT, LR_PAIRS, N_IMG_TOKENS, NUM_UNIT_RE, SYSTEM,
-                       drop_measurements, gt_cue_probs, replace_cue, swap_lr)
+                       drop_measurements, gt_cue_probs, gt_unit_values, parse_cue, render_unit_line, replace_cue,
+                       replace_unit_line, swap_lr)
 
 
 def lr_permutation(meta_rows):
@@ -54,21 +55,41 @@ class CueGT:
     (teacher forcing; m4_common.gt_cue_probs), each finding dropped with probability `dropout`, resampled every time
     the item is read. Labels come from build_cue_gt.py, which holds TRAIN labels only."""
 
-    def __init__(self, path, dropout=0.3, gt_map="sample", hi=0.95, lo=0.02):
+    def __init__(self, path, dropout=0.3, gt_map="sample", hi=0.95, lo=0.02, unclear="omit"):
         z = json.load(open(path))
         self.labels, self.pools, self.thresholds = z["labels_train"], z["pools"], z["thresholds"]
         self.dropout, self.gt_map, self.hi, self.lo = dropout, gt_map, hi, lo
+        self.unclear = unclear                    # "omit" (old) | "oof": unclear finding -> the prompt's own OOF value
 
-    def probs(self, case_id, rng):
+    def probs(self, case_id, rng, prompt_cue=None):
         if case_id not in self.labels:
             raise SystemExit(f"{case_id}: no train label in the cue file (gt cues are train-only)")
-        return gt_cue_probs(self.labels[case_id], self.pools, rng, self.dropout, self.gt_map, self.hi, self.lo)
+        return gt_cue_probs(self.labels[case_id], self.pools, rng, self.dropout, self.gt_map, self.hi, self.lo,
+                            unclear_cue=(prompt_cue or {}) if self.unclear == "oof" else None)
+
+
+class UnitCueGT:
+    """improvement 2 (--unit-cue-gt, train rows only): rebuild the unit-level probe line from report side / level
+    labels (improve/unit_probe.py unit_cue.json, TRAIN labels only) with per-part dropout; rows need "unit_scores"
+    (train OOF probe scores, written by improve/build_unit_data.py)."""
+
+    def __init__(self, path, dropout=0.3):
+        z = json.load(open(path))
+        self.labels, self.pools, self.thresholds = z["labels_train"], z["pools"], z["thresholds"]
+        self.dropout = dropout
+
+    def line(self, row, rng):
+        if row["case_id"] not in self.labels:
+            raise SystemExit(f"{row['case_id']}: no train unit label (unit gt cues are train-only)")
+        v = gt_unit_values(self.labels[row["case_id"]], row["unit_scores"], self.pools, self.thresholds, rng,
+                           self.dropout)
+        return render_unit_line(v["kid"], v["vert"])
 
 
 class M4Dataset(Dataset):
     def __init__(self, jsonl, tokenizer, use_image=True, max_len=1024, n_img=N_IMG_TOKENS, limit=0,
                  feat_root=None, backbone="lingshu7b", allow_test=False, train=True, meta_rows=None,
-                 unit_labels=None, lr_flip_prob=0.0, attr_weight=1.0, cue_gt=None, meas_dropout=0.0):
+                 unit_labels=None, lr_flip_prob=0.0, attr_weight=1.0, cue_gt=None, meas_dropout=0.0, unit_cue=None):
         self.rows = []
         with open(jsonl) as f:
             for line in f:
@@ -87,6 +108,9 @@ class M4Dataset(Dataset):
         self.unit_labels = unit_labels            # {case_id: {"group/unit": [[disease_index, 0/1], ...]}} or None
         self.cue_gt = cue_gt if train else None   # CueGT or None (None = the prompt's own OOF / classifier line)
         self.meas_dropout = meas_dropout if train else 0.0
+        self.unit_cue = unit_cue if train else None   # UnitCueGT or None (None = the prompt's own probe line)
+        if self.unit_cue is not None and any(r["split"] != "train" for r in self.rows):
+            raise SystemExit("unit gt cues are train-only")
         if self.cue_gt is not None:
             bad = [r["case_id"] for r in self.rows if r["split"] != "train"]
             if bad:
@@ -129,12 +153,14 @@ class M4Dataset(Dataset):
         if self.cue_gt is not None or self.meas_dropout > 0:
             cue_info = {}
             if self.cue_gt is not None:
-                probs, n_lab, n_drop = self.cue_gt.probs(r["case_id"], random)
+                probs, n_lab, n_drop = self.cue_gt.probs(r["case_id"], random, parse_cue(prompt)[0])
                 prompt = replace_cue(prompt, probs)
                 cue_info.update(probs=probs, n_labelled=n_lab, n_dropped=n_drop)
             if self.meas_dropout > 0:
                 prompt, n_m, k_m = drop_measurements(prompt, self.meas_dropout, random)
                 cue_info.update(n_meas=n_m, n_meas_dropped=k_m)
+        if self.unit_cue is not None:
+            prompt = replace_unit_line(prompt, self.unit_cue.line(r, random))
         if flip:
             prompt, target = swap_lr(prompt), swap_lr(target)
         p = self.tk(chatml(prompt, self.use_image, self.n_img, self.backbone), add_special_tokens=False)["input_ids"]

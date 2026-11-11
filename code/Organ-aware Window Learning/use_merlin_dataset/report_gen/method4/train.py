@@ -37,7 +37,7 @@ from torch.utils.data import DataLoader
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from m4_common import BACKBONES, N_IMG_TOKENS  # noqa: E402
-from m4_data import CueGT, M4Dataset, collate  # noqa: E402
+from m4_data import CueGT, M4Dataset, UnitCueGT, collate  # noqa: E402
 from m4_model import ImageAdapter, ReportGenModel, read_token_meta  # noqa: E402
 
 LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -242,10 +242,17 @@ def main():
     ap.add_argument("--cue-gt-map", default="sample", choices=["sample", "hard"],
                     help="gt_dropout label -> number: sample = drawn from train OOF values on the label's side of the "
                          "method-1 threshold; hard = --cue-gt-hi / --cue-gt-lo")
+    ap.add_argument("--cue-gt-unclear", default="omit", choices=["omit", "oof"],
+                    help="gt_dropout, finding whose report label is unclear: omit (old; omission then marks unclear) or "
+                         "oof (show the prompt's own train OOF classifier value, same dropout); needs complete scores")
     ap.add_argument("--cue-gt-hi", type=float, default=0.95)
     ap.add_argument("--cue-gt-lo", type=float, default=0.02)
     ap.add_argument("--meas-dropout", type=float, default=0.0,
                     help="train only: each measurement item (aorta, spleen, HU values) -> 'unknown' with this probability")
+    ap.add_argument("--unit-cue-gt", default="",
+                    help="improvement 2: improve/unit_probe.py unit_cue.json -> train rows get the unit-level probe line "
+                         "rebuilt from report side / level labels (data must come from improve/build_unit_data.py)")
+    ap.add_argument("--unit-cue-dropout", type=float, default=0.3, help="--unit-cue-gt: per-part drop probability")
     ap.add_argument("--log-every", type=int, default=20)
     args = ap.parse_args()
     if args.stage == 1 and args.text_only:
@@ -279,8 +286,10 @@ def main():
     ds_tr = M4Dataset(Path(args.data) / "train.jsonl", tk, use_img, args.max_len, limit=args.train_limit,
                       feat_root=feat_root, backbone=args.backbone, meta_rows=meta_rows, unit_labels=unit_labels,
                       lr_flip_prob=args.lr_flip_prob, attr_weight=args.attr_token_weight,
-                      cue_gt=CueGT(args.cue_gt, args.cue_dropout, args.cue_gt_map, args.cue_gt_hi, args.cue_gt_lo)
-                      if args.cue_source == "gt_dropout" else None, meas_dropout=args.meas_dropout)
+                      cue_gt=CueGT(args.cue_gt, args.cue_dropout, args.cue_gt_map, args.cue_gt_hi, args.cue_gt_lo,
+                                  args.cue_gt_unclear)
+                      if args.cue_source == "gt_dropout" else None, meas_dropout=args.meas_dropout,
+                      unit_cue=UnitCueGT(args.unit_cue_gt, args.unit_cue_dropout) if args.unit_cue_gt else None)
     ds_va = M4Dataset(Path(args.data) / "val.jsonl", tk, use_img, args.max_len, limit=args.val_n,
                       feat_root=feat_root, backbone=args.backbone)
     col = functools.partial(collate, pad_id=tk.pad_token_id, train=True)
