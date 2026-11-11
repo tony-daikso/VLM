@@ -20,9 +20,10 @@ python evaluate.py --gen <生成檔.jsonl> --name <系統名> \
 - `MERLIN_DATA` 預設是 Mac 的 `/Users/tony.tu/Desktop/戴承智慧/VLM/data/CT/merlin`；在其他機器上設環境變數或直接給 `--labels --meta --disease14-dir --cache --out-root`。
 - 結果寫到 `$MERLIN_DATA/report_gen/eval/results/<系統名>/`：`metrics.json`、`report.md`（中文疾病名表格）、`per_case_categories.jsonl`（每例每類 [參考類別, 生成反抽類別]，沒有文字）。
 - 常用選項：`--no-qwen`（只算 BLEU / ROUGE / BERTScore）、`--no-request`（只用快取，不送任何請求）、`--limit N`、`--ids 檔案`、`--bertscore-model <本機模型資料夾>`。
+- 11-11 新增：`--extract-only`（只填 Qwen 快取，寫 `extract_status.json` 後結束，之後用 `--no-request` 計分；`method4/queue_cue/eval_full2.sh` 用它讓 Spark 反抽與 A6000 CPU 計分重疊）、`--extract-from <原生成檔>` ＋ `--ext-override <fill14 merge_ext.jsonl>`（改進項 1「強制寫滿 14 類」的合併法計分，見 `method4/fill14.py`）。BERTScore 改為依長度分批、只跑到第 17 層，分數與舊版相同（96 對最大差 1.2e-7），CPU 時間約減半。
 - 錯誤提示測試（方法四，只在 val）：`--cue-log <infer.py 的 <out>.cues.jsonl>`，報告多一節「錯誤提示測試」：每類分陽→陰、陰→陽統計「提示錯但報告仍與原報告標籤一致」的比例，另列分類器本身就錯的提示（自然 FN／FP）；脂肪肝、骨折、膽結石標「分類器較弱」。產生方式見 `method4/PLAN.md` 4B 節。
 - **test split 鎖住**：輸入裡 split=test 的病例一律丟掉；`--split test` 要加 `--allow-test` 才會執行，只能在使用者解鎖 test 之後用。
-- **Qwen 規則**：本程式只當 client，不會啟動、停止或修改任何 vLLM。並行數上限寫死為 8（預設 2）；伺服器同時有其他專案在用時請用 ≤4。11-09 下午 A6000 `:8000` 與 Spark `std14-qwen :8005`（CG 專案）已關閉，現在用 Spark `merlin-qwen-fp8`（`127.0.0.1:8003`，max-model-len 16384）。
+- **Qwen 規則**：本程式只當 client，不會啟動、停止或修改任何 vLLM。並行數上限 64（11-11 起 Spark merlin-qwen-fp8 以 `--max-num-seqs 64` 重建；原為 8，預設 2）；伺服器同時有其他專案在用時請用 ≤4。11-09 下午 A6000 `:8000` 與 Spark `std14-qwen :8005`（CG 專案）已關閉，現在用 Spark `merlin-qwen-fp8`（`127.0.0.1:8003`，max-model-len 16384）。
 - 程式裡沒有任何密碼或 token。
 - 參考原句：B 的 targets 列有 `target_text`（target_lines 的 clean 一行一句）時直接當整段參考文字；每類句子用 `diseases.<d>.sentence_clean`。B 的完整 targets 在 A6000 `~/Desktop/Tony/VLM/OWL/report_gen/targets/`，評估時把 `targets_val.jsonl` 拿來用（含醫師原句，只能放 data/ 或 A6000）。
 

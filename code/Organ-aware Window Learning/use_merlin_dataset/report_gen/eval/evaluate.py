@@ -414,6 +414,8 @@ def bertscore(cands, refs, model_path, layer=17, batch=16, device="cpu", threads
     torch.set_num_threads(threads)
     tk = AutoTokenizer.from_pretrained(model_path)
     m = AutoModel.from_pretrained(model_path).to(device).eval()
+    if hasattr(m, "encoder") and hasattr(m.encoder, "layer") and len(m.encoder.layer) > layer:
+        m.encoder.layer = m.encoder.layer[:layer]   # layers above `layer` never reach hidden_states[layer]: same result
     is_roberta = "roberta" in type(m).__name__.lower()
 
     def emb(texts):
@@ -427,17 +429,20 @@ def bertscore(cands, refs, model_path, layer=17, batch=16, device="cpu", threads
         keep = enc["attention_mask"].bool() & ~sp
         return [hs[i][keep[i]] for i in range(len(texts))]
 
-    P, R, F = [], [], []
-    for i in range(0, len(cands), batch):
-        ce, re_ = emb(cands[i:i + batch]), emb(refs[i:i + batch])
-        for c, r in zip(ce, re_):
+    n = len(cands)
+    P, R, F = np.zeros(n), np.zeros(n), np.zeros(n)
+    # length-sorted batches (less padding; every pair is scored on its own, so the order does not change the scores)
+    order = sorted(range(n), key=lambda i: len(cands[i]) + len(refs[i]))
+    for i in range(0, n, batch):
+        idx = order[i:i + batch]
+        ce, re_ = emb([cands[j] for j in idx]), emb([refs[j] for j in idx])
+        for j, c, r in zip(idx, ce, re_):
             if len(c) == 0 or len(r) == 0:
-                P.append(0.0), R.append(0.0), F.append(0.0)
                 continue
             s = c @ r.T
             p, rr = s.max(1).values.mean().item(), s.max(0).values.mean().item()
-            P.append(p), R.append(rr), F.append(2 * p * rr / (p + rr) if p + rr > 0 else 0.0)
-    return np.array(P), np.array(R), np.array(F)
+            P[j], R[j], F[j] = p, rr, (2 * p * rr / (p + rr) if p + rr > 0 else 0.0)
+    return P, R, F
 
 
 # --------------------------------------------------------------------------------------------- main
@@ -510,6 +515,8 @@ def main():
     ap.add_argument("--cache", default=str(DATA_EVAL / "cache" / "qwen_extract_cache.jsonl"))
     ap.add_argument("--no-qwen", action="store_true", help="text metrics only")
     ap.add_argument("--no-request", action="store_true", help="use cached extractions only, send nothing")
+    ap.add_argument("--extract-only", action="store_true", help="fill the Qwen cache and stop (writes "
+                                                                "<out>/extract_status.json); score later with --no-request")
     ap.add_argument("--bertscore-model", default="", help="local dir (e.g. A6000 ~/Desktop/Tony/models/roberta-large)")
     ap.add_argument("--bertscore-layer", type=int, default=17)
     ap.add_argument("--bertscore-threads", type=int, default=4)
@@ -594,6 +601,12 @@ def main():
         ok_ids = [c for c in ids if c in ext and c in labels]
         metrics["qwen"]["n_extracted_ok"] = len(ok_ids)
         metrics["qwen"]["n_failed_or_unlabelled"] = len(ids) - len(ok_ids)
+        if a.extract_only:
+            (out / "extract_status.json").write_text(json.dumps({"n_cases": len(ids), "n_extracted_ok": len(ok_ids),
+                                                                 "n_failed_or_unlabelled": len(ids) - len(ok_ids),
+                                                                 "time": time.strftime("%Y-%m-%d %H:%M")}))
+            print(f"extract-only: {len(ok_ids)}/{len(ids)} ok -> {out}/extract_status.json", flush=True)
+            return
 
         per_case = []
         for c in ok_ids:
