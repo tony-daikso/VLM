@@ -12,6 +12,10 @@ pillar/optionA/build_aplus.py probe_scores_pillar.csv) and the grade line right 
 keys whose disease cue in the row's own classifier line is >= the method-1 threshold of cue_gt.json (train: OOF cue;
 train.py --unit-cue-grades rebuilds it from the gt cue). --stats-out writes coverage / shown counts (no ids).
 Test rows are refused.
+
+Hydronephrosis grade (agent I, 11-12; optional): --hy-grade-scores probe_scores_hygrade.csv (improve/hygrade_probe.py,
+column hy_grade; needs --grade-cue-gt) adds "hy_grade" to grade_scores and the item "hydronephrosis moderate or severe x"
+to the grade line when the row's hydronephrosis cue is >= its method-1 threshold. Without it the output is unchanged.
 """
 import argparse
 import csv
@@ -21,8 +25,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from m4_common import (GRADE_KEYS, GRADE_PREFIX, UNIT_LEVELS, UNIT_PREFIX, grade_line_from_scores,  # noqa: E402
-                       render_unit_line, replace_grade_line, replace_unit_line)
+from m4_common import (GRADE_KEYS, GRADE_KEYS_HY, GRADE_PREFIX, HY_GRADE_KEY, UNIT_LEVELS, UNIT_PREFIX,  # noqa: E402
+                       grade_line_from_scores, render_unit_line, replace_grade_line, replace_unit_line)
 
 
 def main():
@@ -32,12 +36,18 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--grade-cue-gt", default="", help="A+: cue_gt.json (method-1 thresholds) -> grade line + grade_scores")
     ap.add_argument("--stats-out", default="", help="optional json: coverage / grade-shown counts (aggregates only)")
+    ap.add_argument("--hy-grade-scores", default="",
+                    help="optional: improve/hygrade_probe.py probe_scores_hygrade.csv -> hydronephrosis grade item")
     a = ap.parse_args()
+    if a.hy_grade_scores and not a.grade_cue_gt:
+        raise SystemExit("--hy-grade-scores needs --grade-cue-gt")
+    KEYS = GRADE_KEYS_HY if a.hy_grade_scores else GRADE_KEYS
+    hy = {r["case_id"]: r for r in csv.DictReader(open(a.hy_grade_scores))} if a.hy_grade_scores else None
     sc = {r["case_id"]: r for r in csv.DictReader(open(a.scores))}
     cue_thr = json.load(open(a.grade_cue_gt))["thresholds"] if a.grade_cue_gt else None
     st = {"rows": 0, "no_scores": 0, "splits": {}, "kid_scored": [0, 0], "vert_any": 0, "vert_units": 0}
     if cue_thr:
-        st.update(grade_scored={k: 0 for k, _, _ in GRADE_KEYS}, grade_shown={k: 0 for k, _, _ in GRADE_KEYS},
+        st.update(grade_scored={k: 0 for k, _, _ in KEYS}, grade_shown={k: 0 for k, _, _ in KEYS},
                   grade_line_rows=0)
     v = lambda x: None if x in ("", None) else round(float(x), 2)   # noqa: E731
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
@@ -65,12 +75,16 @@ def main():
             st["vert_units"] += sum(x is not None for x in vert)
             if cue_thr:
                 gs = {k: (None if s is None else v(s.get(k))) for k, _, _ in GRADE_KEYS}
+                if hy is not None:
+                    h = hy.get(r["case_id"])
+                    assert h is None or h["split"] == r["split"], r["case_id"]
+                    gs[HY_GRADE_KEY[0]] = None if h is None else v(h[HY_GRADE_KEY[0]])
                 r["grade_scores"] = gs
-                gl = grade_line_from_scores(r["prompt"], gs, cue_thr)
+                gl = grade_line_from_scores(r["prompt"], gs, cue_thr, KEYS)
                 r["prompt"] = replace_grade_line(r["prompt"], gl)
                 assert sum(ln.startswith(GRADE_PREFIX) for ln in r["prompt"].split("\n")) == (1 if gl else 0)
                 st["grade_line_rows"] += bool(gl)
-                for k, _, txt in GRADE_KEYS:
+                for k, _, txt in KEYS:
                     st["grade_scored"][k] += gs[k] is not None
                     st["grade_shown"][k] += f" {txt} " in f" {gl[len(GRADE_PREFIX):]}"
             fo.write(json.dumps(r, ensure_ascii=False) + "\n")

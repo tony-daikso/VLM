@@ -328,15 +328,22 @@ GRADE_KEYS = [("hs_grade", "hepatic_steatosis", "hepatic steatosis moderate or s
               ("ath_grade", "atherosclerosis", "atherosclerosis moderate or severe")]
 
 
-def grade_keys_shown(prompt, cue_thr):
+# agent I (11-12): optional 4th grade item, hydronephrosis "moderate or severe" probability (improve/hygrade_probe.py).
+# Only callers that pass keys=GRADE_KEYS_HY use it (improve/build_unit_data.py --hy-grade-scores; m4_data.UnitCueGT when
+# the cue file's grade_cue_thr holds hydronephrosis). keys=None -> GRADE_KEYS: every existing arm is unchanged.
+HY_GRADE_KEY = ("hy_grade", "hydronephrosis", "hydronephrosis moderate or severe")
+GRADE_KEYS_HY = GRADE_KEYS + [HY_GRADE_KEY]
+
+
+def grade_keys_shown(prompt, cue_thr, keys=None):
     """grade keys whose disease cue in `prompt` is >= cue_thr[disease] (a missing / dropped cue -> not shown)."""
     cue, _ = parse_cue(prompt)
-    return [k for k, d, _ in GRADE_KEYS if cue.get(d) is not None and cue[d] >= cue_thr[d]]
+    return [k for k, d, _ in (keys or GRADE_KEYS) if cue.get(d) is not None and cue[d] >= cue_thr[d]]
 
 
-def render_grade_line(vals):
+def render_grade_line(vals, keys=None):
     """{grade key: value or None} -> the grade line ("" when no key has a value), keys in GRADE_KEYS order."""
-    items = [f"{txt} {vals[k]:.2f}" for k, _, txt in GRADE_KEYS if vals.get(k) is not None]
+    items = [f"{txt} {vals[k]:.2f}" for k, _, txt in (keys or GRADE_KEYS) if vals.get(k) is not None]
     return (GRADE_PREFIX + "; ".join(items) + ".") if items else ""
 
 
@@ -357,10 +364,10 @@ def replace_grade_line(prompt, line):
     return "\n".join(lines)
 
 
-def grade_line_from_scores(prompt, scores, cue_thr):
+def grade_line_from_scores(prompt, scores, cue_thr, keys=None):
     """deterministic grade line (val / inference, and the stored train prompt): the case's own grade scores for the
     keys whose disease cue is positive in `prompt`."""
-    return render_grade_line({k: scores.get(k) for k in grade_keys_shown(prompt, cue_thr)})
+    return render_grade_line({k: scores.get(k) for k in grade_keys_shown(prompt, cue_thr, keys)}, keys)
 
 
 def gt_grade_values(keys, lab, oof, pools, rng):

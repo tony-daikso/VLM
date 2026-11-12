@@ -9,7 +9,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from m4_common import (BACKBONES, DISEASES, LEVEL_RE_TXT, LR_PAIRS, N_IMG_TOKENS, NUM_UNIT_RE, SYSTEM,
+from m4_common import (BACKBONES, DISEASES, GRADE_KEYS_HY, HY_GRADE_KEY, LEVEL_RE_TXT, LR_PAIRS, N_IMG_TOKENS,
+                       NUM_UNIT_RE, SYSTEM,
                        drop_measurements, grade_keys_shown, gt_cue_probs, gt_grade_values, gt_unit_values, parse_cue,
                        render_grade_line, render_unit_line, replace_cue, replace_grade_line, replace_unit_line, swap_lr)
 
@@ -80,10 +81,15 @@ class UnitCueGT:
         # A+ (--unit-cue-grades, agent H 11-12): also rebuild the grade line; needs "grade_cue_thr" ({disease: method-1
         # cue threshold}, written by improve/pil_cue.py) and grade pools / labels in the same file. Off -> old behaviour.
         self.grade_cue_thr = None
+        self.grade_keys = None                    # None = GRADE_KEYS (the three A+ items)
         if grades:
             if "grade_cue_thr" not in z:
                 raise SystemExit(f"{path}: --unit-cue-grades needs 'grade_cue_thr' (improve/pil_cue.py output)")
             self.grade_cue_thr = z["grade_cue_thr"]
+            # agent I (11-12): a cue file whose grade_cue_thr holds hydronephrosis (pil_cue.py --hy-grade-scores) also
+            # rebuilds the hydronephrosis grade item; the A+ file (three diseases) keeps the old behaviour.
+            if HY_GRADE_KEY[1] in self.grade_cue_thr:
+                self.grade_keys = GRADE_KEYS_HY
 
     def line(self, row, rng):
         if row["case_id"] not in self.labels:
@@ -94,8 +100,9 @@ class UnitCueGT:
 
     def grade_line(self, row, prompt, rng):
         """grade line for the (already gt-rebuilt) prompt: shown keys follow its classifier line."""
-        keys = grade_keys_shown(prompt, self.grade_cue_thr)
-        return render_grade_line(gt_grade_values(keys, self.labels[row["case_id"]], row["grade_scores"], self.pools, rng))
+        keys = grade_keys_shown(prompt, self.grade_cue_thr, self.grade_keys)
+        return render_grade_line(gt_grade_values(keys, self.labels[row["case_id"]], row["grade_scores"], self.pools, rng),
+                                 self.grade_keys)
 
 
 class M4Dataset(Dataset):
@@ -125,6 +132,10 @@ class M4Dataset(Dataset):
             raise SystemExit("unit gt cues are train-only")
         if self.unit_cue is not None and self.unit_cue.grade_cue_thr is None and any("grade_scores" in r for r in self.rows):
             raise SystemExit("rows carry grade_scores (grade line): pass --unit-cue-grades so it follows the gt cue")
+        if (self.unit_cue is not None and self.unit_cue.grade_keys is None
+                and any(HY_GRADE_KEY[0] in r.get("grade_scores", {}) for r in self.rows)):
+            raise SystemExit("rows carry a hydronephrosis grade score: --unit-cue-gt needs the cue file of "
+                             "improve/pil_cue.py --hy-grade-scores (grade_cue_thr with hydronephrosis)")
         if self.cue_gt is not None:
             bad = [r["case_id"] for r in self.rows if r["split"] != "train"]
             if bad:

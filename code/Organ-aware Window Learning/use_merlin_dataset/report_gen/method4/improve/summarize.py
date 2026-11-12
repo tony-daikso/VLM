@@ -2,7 +2,8 @@
 """evaluate.py metrics.json -> one summary column (aggregate numbers only, no ids / text), the rows used in
 queue_cue/RESULTS_interim.md: macro sens / spec / F1 and micro F1 (owl definition, strict), critical-error and
 omission rate, natural FN / FP cue concordance, and the attribute accuracies (both-positive cases).
-usage: python summarize.py <name>=<metrics.json> [...] [--per-disease] [--attr-first]"""
+usage: python summarize.py <name>=<metrics.json> [...] [--per-disease] [--attr-first] [--hy-first]
+--hy-first (agent I, 11-12, hydronephrosis grade cue arm): hydronephrosis grade and side rows first, then --attr-first."""
 import json
 import math
 import sys
@@ -63,6 +64,10 @@ def main():
     print("| 指標 | " + " | ".join(n for n, _ in cols) + " |")
     print("|---|" + "---|" * len(cols))
     rows = ATTR_FIRST + [r for r in ROWS if r[1] not in {k for _, k in ATTR_FIRST}] if "--attr-first" in sys.argv else ROWS
+    if "--hy-first" in sys.argv:
+        hy = ["attr:hydronephrosis:grade", "attr:hydronephrosis:side"]
+        rows = ATTR_FIRST + [r for r in ROWS if r[1] not in {k for _, k in ATTR_FIRST}]
+        rows = sorted(rows, key=lambda r: hy.index(r[1]) if r[1] in hy else len(hy))      # stable: the rest keeps its order
     for label, key in rows:
         print(f"| {label} | " + " | ".join(fmt(s.get(key), key) for _, s in cols) + " |")
     if "--per-disease" in sys.argv:
