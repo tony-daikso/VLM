@@ -12,7 +12,8 @@ from torch.utils.data import Dataset
 from m4_common import (BACKBONES, DISEASES, GRADE_KEYS_HY, HY_GRADE_KEY, LEVEL_RE_TXT, LR_PAIRS, N_IMG_TOKENS,
                        NUM_UNIT_RE, SYSTEM,
                        drop_measurements, grade_keys_shown, gt_cue_probs, gt_grade_values, gt_unit_values, parse_cue,
-                       render_grade_line, render_unit_line, replace_cue, replace_grade_line, replace_unit_line, swap_lr)
+                       render_attr_line, render_grade_line, render_unit_line, replace_attr_line, replace_cue,
+                       replace_grade_line, replace_unit_line, sample_attr_switches, swap_lr)
 
 
 def lr_permutation(meta_rows):
@@ -90,6 +91,9 @@ class UnitCueGT:
             # rebuilds the hydronephrosis grade item; the A+ file (three diseases) keeps the old behaviour.
             if HY_GRADE_KEY[1] in self.grade_cue_thr:
                 self.grade_keys = GRADE_KEYS_HY
+        # agent N (11-12): a cue file with "attr_patterns" (improve/build_attr_data.py) also rebuilds the "attributes to
+        # state" line of rows that carry "attr_state"; a file without it (every earlier arm) keeps the old behaviour.
+        self.attr_patterns = z.get("attr_patterns")
 
     def line(self, row, rng):
         if row["case_id"] not in self.labels:
@@ -103,6 +107,11 @@ class UnitCueGT:
         keys = grade_keys_shown(prompt, self.grade_cue_thr, self.grade_keys)
         return render_grade_line(gt_grade_values(keys, self.labels[row["case_id"]], row["grade_scores"], self.pools, rng),
                                  self.grade_keys)
+
+    def attr_line(self, row, rng):
+        """attribute line: the switches of target-positive findings follow the target sentence (row["attr_state"]), the
+        others are redrawn from the train-positive patterns at every read."""
+        return render_attr_line(sample_attr_switches(row["attr_state"], self.attr_patterns, rng))
 
 
 class M4Dataset(Dataset):
@@ -136,6 +145,10 @@ class M4Dataset(Dataset):
                 and any(HY_GRADE_KEY[0] in r.get("grade_scores", {}) for r in self.rows)):
             raise SystemExit("rows carry a hydronephrosis grade score: --unit-cue-gt needs the cue file of "
                              "improve/pil_cue.py --hy-grade-scores (grade_cue_thr with hydronephrosis)")
+        if (self.unit_cue is not None and getattr(self.unit_cue, "attr_patterns", None) is None
+                and any("attr_state" in r for r in self.rows)):
+            raise SystemExit("rows carry attr_state (attribute line): --unit-cue-gt needs the cue file of "
+                             "improve/build_attr_data.py (with attr_patterns)")
         if self.cue_gt is not None:
             bad = [r["case_id"] for r in self.rows if r["split"] != "train"]
             if bad:
@@ -188,6 +201,8 @@ class M4Dataset(Dataset):
             prompt = replace_unit_line(prompt, self.unit_cue.line(r, random))
             if self.unit_cue.grade_cue_thr is not None:
                 prompt = replace_grade_line(prompt, self.unit_cue.grade_line(r, prompt, random))
+            if getattr(self.unit_cue, "attr_patterns", None) is not None and "attr_state" in r:
+                prompt = replace_attr_line(prompt, self.unit_cue.attr_line(r, random))
         if flip:
             prompt, target = swap_lr(prompt), swap_lr(target)
         p = self.tk(chatml(prompt, self.use_image, self.n_img, self.backbone), add_special_tokens=False)["input_ids"]

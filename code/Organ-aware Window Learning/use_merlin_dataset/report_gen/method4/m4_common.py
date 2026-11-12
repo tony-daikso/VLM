@@ -383,3 +383,83 @@ def gt_grade_values(keys, lab, oof, pools, rng):
             pool = pools[k]["pos" if y else "neg"]
             out[k] = pool[min(int(rng.random() * len(pool)), len(pool) - 1)]
     return out
+
+
+# ---- agent N (11-12): "attributes to state" line (arm T_unit_gt_pil_attr). Only present in prompts built by
+# improve/build_attr_data.py; every function below is a no-op for other prompts. The line lists the attributes the
+# report should state for a finding that is present. It carries switches only, never an attribute value (values come
+# from the cue lines and the measurement line). Train: a switch of a target-positive finding is on iff the target
+# sentence states that attribute; the switches of every other finding are drawn from the joint on / off patterns of
+# the train-positive cases of that finding (m4_data.UnitCueGT, redrawn at every read), so a switch says nothing about
+# whether the finding is present. Val / inference: every switch on (attr_line_all_on), independent of any report.
+ATTR_PREFIX = "For findings that are present, also state: "
+ATTR_ITEMS = [("hepatic_steatosis:grade", "hepatic_steatosis", "steatosis grade"),
+              ("hydronephrosis:grade", "hydronephrosis", "hydronephrosis grade"),
+              ("hydronephrosis:side", "hydronephrosis", "hydronephrosis side"),
+              ("splenomegaly:length", "splenomegaly", "spleen length"),
+              ("abdominal_aortic_aneurysm:diameter", "abdominal_aortic_aneurysm", "aortic aneurysm diameter"),
+              ("atherosclerosis:grade", "atherosclerosis", "atherosclerosis grade"),
+              ("bowel_obstruction:type", "bowel_obstruction", "obstructed bowel segment"),
+              ("ascites:amount", "ascites", "ascites amount"),
+              ("free_air:postoperative", "free_air", "whether free air is postoperative"),
+              ("biliary_ductal_dilation:site", "biliary_ductal_dilation", "bile duct dilation site"),
+              ("fracture:sites", "fracture", "fracture site"),
+              ("fracture:levels", "fracture", "fractured vertebral level"),
+              ("fracture:acuity", "fracture", "fracture acuity")]
+ATTR_DISEASES = list(dict.fromkeys(d for _, d, _ in ATTR_ITEMS))
+
+
+def render_attr_line(on):
+    """on: collection of ATTR_ITEMS keys that are switched on -> the line (fixed item wording and order; an item that
+    is off is left out; nothing on -> "... also state: none.")."""
+    items = [txt for k, _, txt in ATTR_ITEMS if k in on]
+    return ATTR_PREFIX + ("; ".join(items) if items else "none") + "."
+
+
+def attr_line_all_on():
+    return render_attr_line({k for k, _, _ in ATTR_ITEMS})
+
+
+def parse_attr_line(prompt):
+    """prompt -> set of keys switched on, or None when the prompt has no attribute line."""
+    for ln in prompt.split("\n"):
+        if ln.startswith(ATTR_PREFIX):
+            got = set(ln[len(ATTR_PREFIX):].rstrip(".").split("; "))
+            return {k for k, _, txt in ATTR_ITEMS if txt in got}
+    return None
+
+
+def replace_attr_line(prompt, line):
+    """put `line` in place of the attribute line (or right after the measurement line; before the last line, the task
+    instruction, when the prompt has no measurement line); an empty line removes it."""
+    lines = prompt.split("\n")
+    i = next((k for k, ln in enumerate(lines) if ln.startswith(ATTR_PREFIX)), None)
+    if i is not None:
+        if line:
+            lines[i] = line
+        else:
+            del lines[i]
+    elif line:
+        j = next((k for k, ln in enumerate(lines) if ln.startswith(MEAS_PREFIX)), len(lines) - 2)
+        lines.insert(j + 1, line)
+    return "\n".join(lines)
+
+
+def sample_attr_switches(state, patterns, rng):
+    """train-only switches. state: {key: 1 / 0 / None} (1 / 0 = the finding is positive in the target and its sentence
+    states / does not state the attribute; None = the finding is not positive in the target). patterns: {disease:
+    {"keys": [...], "patterns": [[0/1, ...], ...], "cum": [cumulative counts]}} = the joint on / off patterns of the
+    train-positive cases. A finding with a None key gets one pattern drawn from its table (one rng draw per such
+    finding, none for a positive finding). Returns the set of keys that are on."""
+    on = set()
+    for d in ATTR_DISEASES:
+        keys = [k for k, dd, _ in ATTR_ITEMS if dd == d]
+        if all(state.get(k) is not None for k in keys):
+            on.update(k for k in keys if state[k])
+            continue
+        t = patterns[d]
+        assert t["keys"] == keys, d
+        u = rng.random() * t["cum"][-1]
+        j = next(i for i, c in enumerate(t["cum"]) if u < c)
+        on.update(k for k, b in zip(keys, t["patterns"][j]) if b)
+    return on
