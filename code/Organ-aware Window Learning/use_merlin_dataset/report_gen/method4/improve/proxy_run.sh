@@ -3,6 +3,8 @@
 # eval_queue.sh. CPU only, nice 19, 1 thread (~10 s).
 # usage (A6000): bash proxy_run.sh <name> <gen.jsonl> [baseline result names ...]
 # PROXY_SUMMARY_FLAGS (optional, default empty = unchanged): extra summarize.py flags, e.g. --hy-first (agent I)
+# PROXY_IDS (optional, agent M): id list for --ids; unset = the val600 Qwen subset (unchanged); set but empty = no --ids
+#   (every val case of the generation file, e.g. the 5,055-case full val: PROXY_IDS= bash proxy_run.sh <name> <val_full.jsonl> ...)
 # -> $M4/eval/results_proxy/<name>/{metrics.json,report.md,per_case_categories.jsonl}
 #    $M4/improve/proxy/<name>.md : attribute-first summary table, baselines (results_proxy/<b>) + this run
 set -euo pipefail
@@ -11,11 +13,14 @@ M4=$TONY/VLM/OWL/report_gen/m4
 PY=$TONY/tools/vllm-env/bin/python
 name=$1; gen=$2; shift 2
 cuelog=""
+ids=${PROXY_IDS-$M4/data_sub/val_qwen_subset_ids.txt}
+idsflag=""
+[ -n "$ids" ] && idsflag="--ids $ids"
 [ -s "${gen%.jsonl}.cues.jsonl" ] && cuelog="--cue-log ${gen%.jsonl}.cues.jsonl"
 CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 nice -n 19 $PY $M4/code_f/improve/proxy_eval.py --gen "$gen" --name "$name" \
     --labels $TONY/VLM/OWL/data/labels_disease14_all.jsonl --meta $TONY/VLM/merlin_disease14/metadata.csv \
     --disease14-dir $TONY/VLM/merlin_disease14 --targets $M4/inputs/targets_v2/targets_val.jsonl \
-    --ids $M4/data_sub/val_qwen_subset_ids.txt --split val --out-root $M4/eval/results_proxy $cuelog
+    $idsflag --split val --out-root $M4/eval/results_proxy $cuelog
 mkdir -p $M4/improve/proxy
 cols=""
 for b in "$@" "$name"; do [ -s "$M4/eval/results_proxy/$b/metrics.json" ] && cols="$cols $b=$M4/eval/results_proxy/$b/metrics.json"; done
